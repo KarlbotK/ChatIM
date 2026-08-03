@@ -1,0 +1,45 @@
+spring:
+  application:
+    name: UserService
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:InfiniteChat}?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:}
+  mail:
+    host: ${MAIL_HOST:smtp.qq.com}
+    port: ${MAIL_PORT:587}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+  data:
+    redis:
+      database: ${REDIS_DATABASE:2}
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 30000
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:localhost:18375}
+
+mybatis-plus:
+  global-config:
+    db-config:
+      logic-delete-field: isDelete
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+server:
+  port: ${SERVER_PORT:8104}
+
+minio:
+  url: ${MINIO_URL:http://localhost:9000}
+  access-key: ${MINIO_ACCESS_KEY:}
+  secret-key: ${MINIO_SECRET_KEY:}

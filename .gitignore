@@ -1,0 +1,64 @@
+# Maven and Java build output
+**/target/
+**/build/
+*.class
+*.jar
+*.war
+*.ear
+
+# Keep Maven Wrapper metadata; wrapper binaries can be downloaded on demand
+**/.mvn/wrapper/maven-wrapper.jar
+
+# Local application configuration and secrets
+**/src/main/resources/application.yml
+**/src/main/resources/application-local.yml
+**/src/main/resources/application-secret.yml
+**/src/test/resources/application-local.yml
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+
+# Logs and runtime files
+*.log
+logs/
+*.pid
+hs_err_pid*
+replay_pid*
+
+# IntelliJ IDEA
+.idea/
+*.iws
+*.iml
+*.ipr
+
+# Eclipse and Spring Tool Suite
+.apt_generated/
+.classpath
+.factorypath
+.project
+.settings/
+.springBeans
+.sts4-cache/
+
+# NetBeans
+nbproject/private/
+nbbuild/
+dist/
+nbdist/
+.nb-gradle/
+
+# Visual Studio Code
+.vscode/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Generated Spring Initializr documentation
+HELP.md

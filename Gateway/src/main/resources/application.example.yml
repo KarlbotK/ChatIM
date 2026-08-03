@@ -1,0 +1,55 @@
+spring:
+  application:
+    name: Gateway
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:InfiniteChat}?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:}
+  data:
+    redis:
+      database: ${REDIS_DATABASE:2}
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 30000
+  main:
+    web-application-type: reactive
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:localhost:18375}
+    gateway:
+      server:
+        webflux:
+          httpclient:
+            connect-timeout: 60000
+            response-timeout: 60000
+          globalcors:
+            add-to-simple-url-handler-mapping: true
+            cors-configurations:
+              '[/**]':
+                allowedOrigins:
+                  - ${FRONTEND_ORIGIN:http://localhost:10010}
+                allowedMethods:
+                  - GET
+                  - POST
+                  - PUT
+                  - DELETE
+                  - PATCH
+                  - OPTIONS
+                allowedHeaders: "*"
+                allowCredentials: true
+                maxAge: 36000
+          routes:
+            - id: UserService
+              uri: lb://UserService
+              predicates:
+                - Path=/api/user/**
+            - id: OfflineDataService
+              uri: lb://OfflineDataService
+              predicates:
+                - Path=/api/message/**
+
+server:
+  port: ${SERVER_PORT:10010}
