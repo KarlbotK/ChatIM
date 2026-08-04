@@ -1,20 +1,26 @@
 package com.goat.userservice.service.impl;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.goat.common.common.ErrorCode;
 import com.goat.common.constant.SessionTypeConstant;
 import com.goat.common.exception.BusinessException;
 import com.goat.common.exception.ThrowUtils;
+import com.goat.common.model.dto.PageRequest;
 import com.goat.userservice.constants.FriendStatusEnum;
 import com.goat.userservice.constants.UserConstant;
 import com.goat.userservice.constants.UserStateEnum;
 import com.goat.userservice.mapper.FriendMapper;
 import com.goat.userservice.mapper.SessionMapper;
 import com.goat.userservice.mapper.UserSessionMapper;
+import com.goat.userservice.model.dto.FriendDTO;
 import com.goat.userservice.model.entity.*;
 import com.goat.userservice.model.vo.FriendDetailVO;
 import com.goat.userservice.service.FriendService;
@@ -40,13 +46,16 @@ public class FriendServiceImpl extends ServiceImpl<FriendMapper, Friend> impleme
     private final UserService userService;
     private final SessionMapper sessionMapper;
     private final UserSessionMapper userSessionMapper;
+    private final FriendMapper friendMapper;
 
     public FriendServiceImpl(UserService userService,
                              SessionMapper sessionMapper,
-                             UserSessionMapper userSessionMapper) {
+                             UserSessionMapper userSessionMapper,
+                             FriendMapper friendMapper) {
         this.userService = userService;
         this.sessionMapper = sessionMapper;
         this.userSessionMapper = userSessionMapper;
+        this.friendMapper=friendMapper;
     }
 
     @Override
@@ -210,6 +219,178 @@ public class FriendServiceImpl extends ServiceImpl<FriendMapper, Friend> impleme
         } else {
             friendDetailVO.setStatus(FriendStatusEnum.NON_FRIEND.getCode());
         }
+    }
+
+    /**
+     * 获取用户的好友列表
+     * 支持分页和关键字搜索
+     *
+     * @param userId1      用户ID
+     * @param pageRequest 分页参数
+     * @param key         搜索关键字
+     * @return 分页的好友DTO列表
+     */
+    @Override
+    public IPage<FriendDTO> getFriends(String userId1, PageRequest pageRequest, String key) {
+        Long userId = parseUserId(userId1);
+        validateUserId(userId);
+
+        int pageNum = pageRequest.getPageNum();
+        int pageSize = pageRequest.getPageSize();
+
+        // 1. 查询好友关系列表（使用Lambda Wrapper）
+        LambdaQueryWrapper<Friend> friendWrapper = new LambdaQueryWrapper<>();
+        friendWrapper.eq(Friend::getUserId, userId)
+                .ne(Friend::getStatus, FriendStatusEnum.DELETED.getCode())
+                .orderByDesc(Friend::getCreatedTime); // 按创建时间降序排列
+
+        List<Friend> friendList = friendMapper.selectList(friendWrapper);
+
+        // 2. 获取好友ID列表，从好友列表中提取所有好友的ID，组成一个新的ID列表。
+        List<Long> friendIds = friendList.stream() // 将好友列表转换成流
+                .map(Friend::getFriendId) // 对每个好友对象，提取其 friendId（映射转换）
+                .collect(Collectors.toList()); // 将所有ID收集成一个 List<Long> 类型的列表
+
+        if (friendIds.isEmpty()) {
+            // 返回空分页结果
+            Page<FriendDTO> emptyPage = new Page<>(pageNum, pageSize);
+            emptyPage.setTotal(0);
+            emptyPage.setRecords(List.of());
+            return emptyPage;
+        }
+
+        // 3. 查询好友用户信息
+        LambdaQueryWrapper<User> userWrapper = new LambdaQueryWrapper<>();
+        userWrapper.in(User::getUserId, friendIds);
+
+        // 如果有搜索关键字，添加搜索条件
+        if (StringUtils.hasText(key)) {
+            userWrapper.and(wrapper -> wrapper
+                    .like(User::getNickname, key)
+                    .or()
+                    .like(User::getPhone, key)
+                    .or()
+                    .like(User::getUserId, key));
+        }
+
+        List<User> users = userService.list(userWrapper); // 好友信息列表
+
+        // 4. 查询好友与当前用户之间的会话ID映射（批量查询优化）
+        Map<Long, String> friendSessionMap = buildFriendSessionMap(userId, friendIds);
+
+        // 5. 构建好友ID到好友关系的映射（避免嵌套stream，O(n+m)），n = friendList 的大小（好友关系数量），m = users 的大小（查询到的好友用户信息数量）
+        Map<Long, Friend> friendRelationMap = friendList.stream()
+                .collect(Collectors.toMap(Friend::getFriendId, f -> f)); // 创建一个 Map，将好友关系列表转换为 Map，好友ID为key、好友对象为value。
+
+        // 6. 构建 FriendDTO 列表
+        List<FriendDTO> friendDTOList = users.stream()
+                .map(user -> {
+                    FriendDTO dto = new FriendDTO();
+                    dto.setUserId(String.valueOf(user.getUserId())); // 设置dto的ID（好友用户ID）
+                    dto.setNickname(user.getNickname());
+                    dto.setAvatar(user.getAvatar());
+                    dto.setSignature(user.getDescription());
+                    Friend friendRelation = friendRelationMap.get(user.getUserId()); // 通过用户ID从映射表中获取对应的好友关系
+                    dto.setStatus(friendRelation != null ? friendRelation.getStatus() : FriendStatusEnum.NON_FRIEND.getCode()); // 如果存在好友关系则取其状态，否则标记为非好友
+                    dto.setSessionId(friendSessionMap.get(user.getUserId())); // 从会话映射中获取该用户与当前用户的聊天会话ID
+                    return dto;
+                })
+                .collect(Collectors.toList());
+
+        // 7. 手动分页
+        // 创建分页对象：初始化页码和每页大小
+        Page<FriendDTO> page = new Page<>(pageNum, pageSize);
+        page.setTotal(friendDTOList.size());
+
+        // 计算索引范围：根据页码计算起始和结束位置，防止越界
+        int fromIndex = (pageNum - 1) * pageSize;
+        int toIndex = Math.min(fromIndex + pageSize, friendDTOList.size());
+
+        // 截取数据：使用 subList 提取当前页数据，若超出范围则返回空列表
+        if (fromIndex < friendDTOList.size()) {
+            page.setRecords(friendDTOList.subList(fromIndex, toIndex));
+        } else {
+            page.setRecords(List.of());
+        }
+
+        return page;
+    }
+
+
+    /**
+     * 批量构建好友与会话ID的映射关系
+     * <p>
+     * 优化查询性能，避免N+1问题
+     *
+     * @param userId    当前用户ID
+     * @param friendIds 好友ID列表
+     * @return 好友ID到会话ID的映射
+     */
+    private Map<Long, String> buildFriendSessionMap(Long userId, List<Long> friendIds) {
+        Map<Long, String> friendSessionMap = new HashMap<>();
+
+        if (friendIds.isEmpty()) {
+            return friendSessionMap;
+        }
+
+        // 1. 查询当前用户的所有 UserSession
+        LambdaQueryWrapper<UserSession> currentUserSessionWrapper = new LambdaQueryWrapper<>();
+        currentUserSessionWrapper.eq(UserSession::getUserId, userId);
+        List<UserSession> currentUserSessions = userSessionMapper.selectList(currentUserSessionWrapper);
+
+        if (currentUserSessions.isEmpty()) {
+            return friendSessionMap;
+        }
+
+        // 2. 获取当前用户的所有会话ID
+        // 把上面的 currentUserSessions 对象转换成会话ID列表
+        List<Long> currentUserSessionIds = currentUserSessions.stream()
+                .map(UserSession::getSessionId)
+                .collect(Collectors.toList());
+
+        // 3. 查询这些会话的详细信息，筛选出单聊会话（SIGNAL_TYPE）
+        LambdaQueryWrapper<Session> sessionWrapper = new LambdaQueryWrapper<>();
+        sessionWrapper.in(Session::getSessionId, currentUserSessionIds)
+                .eq(Session::getType, SessionTypeConstant.SIGNAL_TYPE);
+        List<Session> singleChatSessions = sessionMapper.selectList(sessionWrapper);
+
+        if (singleChatSessions.isEmpty()) {
+            return friendSessionMap;
+        }
+
+        // 4. 获取单聊会话ID列表
+        List<Long> singleChatSessionIds = singleChatSessions.stream()
+                .map(Session::getSessionId)
+                .collect(Collectors.toList());
+
+        // 5. 查询所有好友在这些会话中的 UserSession 记录
+        LambdaQueryWrapper<UserSession> friendSessionWrapper = new LambdaQueryWrapper<>();
+        friendSessionWrapper.in(UserSession::getUserId, friendIds)
+                .in(UserSession::getSessionId, singleChatSessionIds);
+        List<UserSession> friendUserSessions = userSessionMapper.selectList(friendSessionWrapper);
+
+        // 6. 构建 friendId -> sessionId 映射
+        for (UserSession friendUserSession : friendUserSessions) {
+            Long friendId = friendUserSession.getUserId();
+            Long sessionId = friendUserSession.getSessionId();
+
+            // 验证这个会话是否确实是当前用户和该好友的共同会话 double check
+            if (currentUserSessionIds.contains(sessionId)) {
+                friendSessionMap.put(friendId, String.valueOf(sessionId));
+            }
+        }
+
+        return friendSessionMap;
+    }
+
+
+    /**
+     * 校验用户ID的有效性
+     *
+     * @param userId 用户ID
+     */
+    private void validateUserId(Long userId) {
+        ThrowUtils.throwIf(userId == null || userId < 0, ErrorCode.PARAMS_ERROR, "用户ID无效");
     }
 
 }

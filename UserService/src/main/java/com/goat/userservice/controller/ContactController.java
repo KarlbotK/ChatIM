@@ -1,9 +1,13 @@
 package com.goat.userservice.controller;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.goat.common.common.BaseResponse;
 import com.goat.common.common.ErrorCode;
 import com.goat.common.common.ResultUtils;
 import com.goat.common.exception.BusinessException;
+import com.goat.common.model.dto.PageRequest;
+import com.goat.common.model.dto.PageResponse;
+import com.goat.userservice.model.dto.FriendDTO;
 import com.goat.userservice.model.vo.FriendDetailVO;
 import com.goat.userservice.service.FriendService;
 
@@ -47,6 +51,34 @@ public class ContactController {
             return ResultUtils.error(e.getCode(), e.getMessage());
         } catch (Exception e) {
             log.error("搜索用户失败，用户ID：{}，关键字：{}，原因：{}", userId, keyword, e.getMessage(), e);
+            return ResultUtils.error(ErrorCode.SYSTEM_ERROR);
+        }
+    }
+
+    /**
+     * 获取联系人列表
+     *
+     * @param userId      用户ID
+     * @param pageRequest 分页参数
+     * @param key         查询关键字
+     * @return 联系人列表（分页）
+     */
+    @GetMapping("/{userId}/friend")
+    public BaseResponse<?> getFriends(
+            @PathVariable("userId") String userId,
+            PageRequest pageRequest,
+            @RequestParam(value = "key", defaultValue = "") String key) {
+        try {
+            // 查询分页数据
+            IPage<FriendDTO> friendsPage = friendService.getFriends(userId, pageRequest, key);
+
+            // 使用 PageResponse 统一返回格式
+            return ResultUtils.success(PageResponse.of(friendsPage));
+        } catch (BusinessException e) {
+            log.error("获取好友列表失败，用户ID：{}，原因：{}", userId, e.getMessage());
+            return ResultUtils.error(e.getCode(), e.getMessage());
+        } catch (Exception e) {
+            log.error("获取好友列表失败，用户ID：{}，原因：{}", userId, e.getMessage(), e);
             return ResultUtils.error(ErrorCode.SYSTEM_ERROR);
         }
     }
