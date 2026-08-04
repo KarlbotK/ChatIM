@@ -1,6 +1,6 @@
 package com.goat.userservice.utils;
 
-import com.goat.userservice.constant.UserConstant;
+import com.goat.userservice.constants.UserConstant;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;

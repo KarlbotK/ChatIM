@@ -4,7 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.goat.common.constant.CommonConstant;
 import com.goat.common.common.ErrorCode;
-import com.goat.userservice.constant.UserConstant;
+import com.goat.userservice.constants.UserConstant;
 import com.goat.userservice.loadbalancer.NettyServiceLocator;
 import com.goat.userservice.model.dto.UpdateAvatarRequest;
 import com.goat.userservice.model.dto.UserLoginCodeRequest;

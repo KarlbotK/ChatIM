@@ -1,4 +1,4 @@
-package com.goat.userservice.constant;
+package com.goat.userservice.constants;
 
 
 public class UserConstant {
@@ -15,5 +15,10 @@ public class UserConstant {
 
     public static final Integer DATA_CENTER_ID = 1;
 
+    public static final String EMAIL_REGEX =
+            "^[a-zA-Z0-9_+&*-]+(?:\\.[a-zA-Z0-9_+&*-]+)*@(?:[a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,}$";
+    public static final String PHONE_REGEX = "^1[3-9]\\d{9}$";
+
+    public static final Integer USER_TIME = 3;
 
 }

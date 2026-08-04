@@ -7,7 +7,7 @@ import io.jsonwebtoken.Claims;
 import com.goat.common.common.BaseResponse;
 import com.goat.common.common.ErrorCode;
 import com.goat.common.common.ResultUtils;
-import com.goat.userservice.constant.UserConstant;
+import com.goat.userservice.constants.UserConstant;
 import com.goat.common.exception.ThrowUtils;
 import com.goat.userservice.model.dto.UserLoginCodeRequest;
 import com.goat.userservice.model.dto.UserLoginPasswordRequest;

@@ -1,5 +1,5 @@
 // FriendStatusEnum.java
-package com.goat.userservice.constant;
+package com.goat.userservice.constants;
 
 /**
  * 好友状态枚举
