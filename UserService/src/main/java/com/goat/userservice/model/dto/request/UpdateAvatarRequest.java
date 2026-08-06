@@ -1,4 +1,4 @@
-package com.goat.userservice.model.dto;
+package com.goat.userservice.model.dto.request;
 
 
 import lombok.Data;

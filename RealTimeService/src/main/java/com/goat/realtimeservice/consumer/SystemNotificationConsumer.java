@@ -1,9 +1,9 @@
-/*
 // RealTimeService - SystemNotificationConsumer.java
 package com.goat.realtimeservice.consumer;
 
 import cn.hutool.json.JSONUtil;
 import com.goat.common.constant.CommonConstant;
+import com.goat.realtimeservice.utils.OnlineStatusUtil;
 import com.goat.realtimeservice.websocket.ChannelManager;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFutureListener;
@@ -15,16 +15,15 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
-
-*/
-/**
+/*
+*
  * 系统通知消息消费者
  *
  * 消息类型：
  * - 101：收到好友申请通知
  * - 102：新会话创建通知
  * - 103：新群聊会话创建通知
- *//*
+ */
 
 @Slf4j
 @Component
@@ -93,4 +92,4 @@ public class SystemNotificationConsumer {
             log.error("处理系统通知消息失败，消息: {}, 错误: {}", message, e.getMessage(), e);
         }
     }
-}*/
+}

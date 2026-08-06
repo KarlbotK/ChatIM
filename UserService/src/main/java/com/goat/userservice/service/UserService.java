@@ -2,10 +2,10 @@ package com.goat.userservice.service;
 
 
 import com.baomidou.mybatisplus.extension.service.IService;
-import com.goat.userservice.model.dto.UpdateAvatarRequest;
-import com.goat.userservice.model.dto.UserLoginCodeRequest;
-import com.goat.userservice.model.dto.UserLoginPasswordRequest;
-import com.goat.userservice.model.dto.UserRegisterRequest;
+import com.goat.userservice.model.dto.request.UpdateAvatarRequest;
+import com.goat.userservice.model.dto.request.UserLoginCodeRequest;
+import com.goat.userservice.model.dto.request.UserLoginPasswordRequest;
+import com.goat.userservice.model.dto.request.UserRegisterRequest;
 import com.goat.userservice.model.entity.User;
 import com.goat.userservice.model.vo.LoginAndRegisterResponse;
 import com.goat.userservice.model.vo.TokenResponse;

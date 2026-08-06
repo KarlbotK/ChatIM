@@ -1,6 +1,6 @@
 package com.goat.userservice.controller;
 
-import com.goat.userservice.model.dto.UpdateAvatarRequest;
+import com.goat.userservice.model.dto.request.UpdateAvatarRequest;
 import com.goat.userservice.model.vo.TokenResponse;
 import com.goat.userservice.model.vo.UploadUrlResponse;
 import io.jsonwebtoken.Claims;
@@ -9,9 +9,9 @@ import com.goat.common.common.ErrorCode;
 import com.goat.common.common.ResultUtils;
 import com.goat.userservice.constants.UserConstant;
 import com.goat.common.exception.ThrowUtils;
-import com.goat.userservice.model.dto.UserLoginCodeRequest;
-import com.goat.userservice.model.dto.UserLoginPasswordRequest;
-import com.goat.userservice.model.dto.UserRegisterRequest;
+import com.goat.userservice.model.dto.request.UserLoginCodeRequest;
+import com.goat.userservice.model.dto.request.UserLoginPasswordRequest;
+import com.goat.userservice.model.dto.request.UserRegisterRequest;
 import com.goat.userservice.model.vo.LoginAndRegisterResponse;
 import com.goat.userservice.service.UserService;
 import com.goat.common.utils.JwtUtil;

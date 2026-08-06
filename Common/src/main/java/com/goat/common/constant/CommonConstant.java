@@ -25,6 +25,16 @@ public class CommonConstant {
 
     public static final String KAFKA_MESSAGE_TOPIC_PUSH = "message-topic";
 
+    /**
+     * 系统通知消息 Kafka 主题
+     */
+    public static final String KAFKA_SYSTEM_NOTIFICATION_TOPIC = "system-notification-topic";
+
+    /**
+     * 系统通知持久化 Kafka 主题
+     */
+    public static final String KAFKA_STORE_NOTIFICATION_TOPIC = "store-notification-topic";
+
     public static final String REDIS_NETTY_URI = "nettyUri";
 
     public static final String DISCOVERY_CLIENT_NAME = "RealTimeService";
