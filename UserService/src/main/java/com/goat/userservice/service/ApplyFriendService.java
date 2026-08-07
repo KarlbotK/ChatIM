@@ -1,6 +1,9 @@
 package com.goat.userservice.service;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.service.IService;
+import com.goat.common.model.dto.PageRequest;
+import com.goat.userservice.model.dto.ApplyFriendDTO;
 import com.goat.userservice.model.entity.ApplyFriend;
 
 /**
@@ -31,6 +34,15 @@ public interface ApplyFriendService extends IService<ApplyFriend> {
      * @return 好友申请ID
      */
     Long sendFriendRequest(Long senderId, Long receiverId, String message);
+
+    /**
+     * 查询用户收到的好友申请列表（返回DTO，包含用户信息）
+     *
+     * @param userId      用户ID
+     * @param pageRequest 分页参数
+     * @return 申请DTO列表（包含userId、nickname、avatar、isReceiver等字段）
+     */
+    IPage<ApplyFriendDTO> getReceivedRequestsWithUserInfo(Long userId, PageRequest pageRequest);
 
 
 }

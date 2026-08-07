@@ -7,6 +7,7 @@ import com.goat.common.common.ResultUtils;
 import com.goat.common.exception.BusinessException;
 import com.goat.common.model.dto.PageRequest;
 import com.goat.common.model.dto.PageResponse;
+import com.goat.userservice.model.dto.ApplyFriendDTO;
 import com.goat.userservice.model.dto.request.AddFriendRequest;
 import com.goat.userservice.model.dto.FriendDTO;
 import com.goat.userservice.model.vo.FriendDetailVO;
@@ -125,4 +126,32 @@ public class ContactController {
         log.error("请求体解析失败: {}", e.getMessage());
         return ResultUtils.error(ErrorCode.INVALID_PARAMETER_ERROR, "请求体格式错误或为空");
     }
+
+    /**
+     * 获取好友申请列表
+     *
+     * @param userId        发送者用户ID
+     * @param pageRequest    分页参数
+     * @return 申请列表
+     */
+    @GetMapping("/{userId}/apply")
+    public BaseResponse<?> getApplyList(
+            @PathVariable Long userId,
+            PageRequest pageRequest) {
+        try {
+            // 查询分页数据
+            IPage<ApplyFriendDTO> applyFriendDTOPage = applyFriendService.getReceivedRequestsWithUserInfo(
+                    userId, pageRequest);
+
+            // 使用 PageResponse 统一返回格式
+            return ResultUtils.success(PageResponse.of(applyFriendDTOPage));
+        } catch (BusinessException e) {
+            log.error("获取好友申请列表失败，用户ID：{}，原因：{}", userId, e.getMessage());
+            return ResultUtils.error(e.getCode(), e.getMessage());
+        } catch (Exception e) {
+            log.error("获取好友申请列表失败，用户ID：{}，原因：{}", userId, e.getMessage(), e);
+            return ResultUtils.error(ErrorCode.SYSTEM_ERROR);
+        }
+    }
+
 }
