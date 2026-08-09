@@ -19,6 +19,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.HashMap;
+
 /**
  * 联系人Controller
  * <p>
@@ -154,4 +156,53 @@ public class ContactController {
         }
     }
 
+    /**
+     * 获取未读好友申请数量
+     *
+     * @param userId 用户ID
+     * @return 未读好友申请数量
+     */
+    @GetMapping("/{userId}/applyCount")
+    public BaseResponse<?> getUnreadApplyCount(@PathVariable Long userId) {
+        try {
+            int count = applyFriendService.getUnreadCount(userId);
+            HashMap<String, Integer> map = new HashMap<>();
+            map.put("count", count);
+            return ResultUtils.success(map);
+        } catch (BusinessException e) {
+            log.error("获取未读好友申请数量失败，用户ID：{}，原因：{}", userId, e.getMessage());
+            return ResultUtils.error(e.getCode(), e.getMessage());
+        } catch (Exception e) {
+            log.error("获取未读好友申请数量失败，用户ID：{}，原因：{}", userId, e.getMessage(), e);
+            return ResultUtils.error(ErrorCode.SYSTEM_ERROR);
+        }
+    }
+
+    /**
+     * 删除好友
+     *
+     * @param userId        用户ID
+     * @param receiveuserId 删除的好友ID
+     * @return 是否成功
+     */
+    @DeleteMapping("/{userId}/friend/{receiveuserId}")
+    public BaseResponse<?> deleteFriend(
+            @PathVariable String userId,
+            @PathVariable String receiveuserId) {
+        try {
+            Long userIdL = Long.valueOf(userId);
+            Long friendId = Long.valueOf(receiveuserId);
+            boolean result = friendService.deleteFriend(userIdL, friendId);
+            return ResultUtils.success(result);
+        } catch (NumberFormatException e) {
+            log.error("删除好友失败，用户ID格式错误，用户：{}，好友：{}", userId, receiveuserId);
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR, "用户ID格式错误");
+        } catch (BusinessException e) {
+            log.error("删除好友失败，用户：{}，好友：{}，原因：{}", userId, receiveuserId, e.getMessage());
+            return ResultUtils.error(e.getCode(), e.getMessage());
+        } catch (Exception e) {
+            log.error("删除好友失败，用户：{}，好友：{}，原因：{}", userId, receiveuserId, e.getMessage(), e);
+            return ResultUtils.error(ErrorCode.SYSTEM_ERROR);
+        }
+    }
 }
