@@ -62,4 +62,22 @@ public interface FriendService extends IService<Friend> {
      * @return 删除是否成功
      */
     boolean deleteFriend(Long userId, Long friendId);
+
+    /**
+     * 拉黑好友
+     *
+     * @param userId   当前用户ID
+     * @param friendId 好友ID
+     * @return 更新是否成功
+     */
+    boolean blockFriend(Long userId, Long friendId);
+
+    /**
+     * 取消拉黑好友
+     *
+     * @param userId   当前用户ID
+     * @param friendId 好友ID
+     * @return 更新是否成功
+     */
+    boolean unblockFriend(Long userId, Long friendId);
 }

@@ -205,4 +205,60 @@ public class ContactController {
             return ResultUtils.error(ErrorCode.SYSTEM_ERROR);
         }
     }
+
+    /**
+     * 拉黑好友
+     *
+     * @param userId        用户ID
+     * @param receiveuserId 拉黑的好友ID
+     * @return 是否成功
+     */
+    @PostMapping("/{userId}/block/{receiveuserId}")
+    public BaseResponse<?> blockFriend(
+            @PathVariable String userId,
+            @PathVariable String receiveuserId) {
+        try {
+            Long userIdL = Long.valueOf(userId);
+            Long friendId = Long.valueOf(receiveuserId);
+            boolean result = friendService.blockFriend(userIdL, friendId);
+            return ResultUtils.success(result);
+        } catch (NumberFormatException e) {
+            log.error("拉黑好友失败，用户ID格式错误，用户：{}，好友：{}", userId, receiveuserId);
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR, "用户ID格式错误");
+        } catch (BusinessException e) {
+            log.error("拉黑好友失败，用户：{}，好友：{}，原因：{}", userId, receiveuserId, e.getMessage());
+            return ResultUtils.error(e.getCode(), e.getMessage());
+        } catch (Exception e) {
+            log.error("拉黑好友失败，用户：{}，好友：{}，原因：{}", userId, receiveuserId, e.getMessage(), e);
+            return ResultUtils.error(ErrorCode.SYSTEM_ERROR);
+        }
+    }
+
+    /**
+     * 取消拉黑好友
+     *
+     * @param userId        用户ID
+     * @param receiveuserId 取消拉黑的好友ID
+     * @return 是否成功
+     */
+    @DeleteMapping("/{userId}/block/{receiveuserId}")
+    public BaseResponse<?> unblockFriend(
+            @PathVariable String userId,
+            @PathVariable String receiveuserId) {
+        try {
+            Long userIdL = Long.valueOf(userId);
+            Long friendId = Long.valueOf(receiveuserId);
+            boolean result = friendService.unblockFriend(userIdL, friendId);
+            return ResultUtils.success(result);
+        } catch (NumberFormatException e) {
+            log.error("取消拉黑好友失败，用户ID格式错误，用户：{}，好友：{}", userId, receiveuserId);
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR, "用户ID格式错误");
+        } catch (BusinessException e) {
+            log.error("取消拉黑好友失败，用户：{}，好友：{}，原因：{}", userId, receiveuserId, e.getMessage());
+            return ResultUtils.error(e.getCode(), e.getMessage());
+        } catch (Exception e) {
+            log.error("取消拉黑好友失败，用户：{}，好友：{}，原因：{}", userId, receiveuserId, e.getMessage(), e);
+            return ResultUtils.error(ErrorCode.SYSTEM_ERROR);
+        }
+    }
 }
