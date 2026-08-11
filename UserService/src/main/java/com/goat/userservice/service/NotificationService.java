@@ -1,6 +1,7 @@
 package com.goat.userservice.service;
 
 import com.goat.userservice.model.dto.FriendApplicationNotificationDTO;
+import com.goat.userservice.model.dto.NewSessionNotificationDTO;
 
 /**
  * 通知推送服务接口
@@ -22,4 +23,16 @@ public interface NotificationService {
      * @param notification 好友申请通知信息
      */
     void pushNewApply(Long userId, FriendApplicationNotificationDTO notification);
+
+    /**
+     * 推送新会话通知
+     * <p>
+     * 场景：好友申请通过后，系统创建新的单聊会话
+     *
+     * @param userId       接收通知的用户ID
+     * @param sessionId    会话ID
+     * @param sessionType  会话类型（0-单聊，1-群聊，2-机器人）
+     * @param notification 新会话通知信息（包含sessionName和avatar）
+     */
+    void pushNewSession(Long senderId, Long userId, Long sessionId, Integer sessionType, NewSessionNotificationDTO notification);
 }

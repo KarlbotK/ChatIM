@@ -36,12 +36,8 @@ public class ConsistentHash {
         int hash = getHash(clientInfo);
         //得到大于该Hash值的子红黑树
         SortedMap<Integer,String> subMap = Nodes.tailMap(hash);
-        //获取该子树最小元素
-        Integer nodeIndex = subMap.firstKey();
-        //没有大于该元素的子树 取整树的第一个元素
-        if (nodeIndex == null) {
-            nodeIndex = Nodes.firstKey();
-        }
+        //没有大于该Hash值的节点时，回到哈希环的第一个节点
+        Integer nodeIndex = subMap.isEmpty() ? Nodes.firstKey() : subMap.firstKey();
         return Nodes.get(nodeIndex);
     }
     //使用FNV1_32_HASH算法计算服务器的Hash值,这里不使用重写hashCode的方法，最终效果没区别

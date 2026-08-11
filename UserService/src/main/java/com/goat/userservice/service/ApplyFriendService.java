@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.goat.common.model.dto.PageRequest;
 import com.goat.userservice.model.dto.ApplyFriendDTO;
+import com.goat.userservice.model.dto.ModifyFriendApplicationResponse;
 import com.goat.userservice.model.entity.ApplyFriend;
 
 /**
@@ -52,4 +53,20 @@ public interface ApplyFriendService extends IService<ApplyFriend> {
      */
     int getUnreadCount(Long userId);
 
+    /**
+     * 修改好友申请状态
+     *
+     * 处理流程：
+     * 1. 验证状态值的有效性
+     * 2. 根据状态类型执行不同操作：
+     *    - ACCEPTED(1): 通过申请，创建好友关系，返回会话信息
+     *    - REJECTED(2): 拒绝申请
+     *    - READ(3): 标记为已读
+     *
+     * @param receiverId 接收者用户ID
+     * @param senderIds  发送者用户ID列表
+     * @param status     目标状态码
+     * @return 通过申请时返回会话信息，其他情况返回null
+     */
+    ModifyFriendApplicationResponse modifyApplicationStatus(Long receiverId, java.util.List<Long> senderIds, Integer status);
 }
