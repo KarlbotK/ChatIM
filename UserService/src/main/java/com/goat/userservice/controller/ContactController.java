@@ -8,7 +8,7 @@ import com.goat.common.exception.BusinessException;
 import com.goat.common.model.dto.PageRequest;
 import com.goat.common.model.dto.PageResponse;
 import com.goat.userservice.model.dto.ApplyFriendDTO;
-import com.goat.userservice.model.dto.ModifyFriendApplicationResponse;
+import com.goat.userservice.model.dto.response.ModifyFriendApplicationResponse;
 import com.goat.userservice.model.dto.request.AddFriendRequest;
 import com.goat.userservice.model.dto.FriendDTO;
 import com.goat.userservice.model.dto.request.ModifyFriendApplicationRequest;

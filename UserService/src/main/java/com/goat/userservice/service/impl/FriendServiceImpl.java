@@ -23,7 +23,7 @@ import com.goat.userservice.mapper.FriendMapper;
 import com.goat.userservice.mapper.SessionMapper;
 import com.goat.userservice.mapper.UserSessionMapper;
 import com.goat.userservice.model.dto.FriendDTO;
-import com.goat.userservice.model.dto.ModifyFriendApplicationResponse;
+import com.goat.userservice.model.dto.response.ModifyFriendApplicationResponse;
 import com.goat.userservice.model.dto.NewSessionNotificationDTO;
 import com.goat.userservice.model.entity.*;
 import com.goat.userservice.model.vo.FriendDetailVO;

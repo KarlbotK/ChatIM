@@ -2,9 +2,11 @@ package com.goat.userservice.service.impl;
 
 
 import com.goat.common.constant.MessageTypeConstant;
+import com.goat.common.constant.SessionTypeConstant;
 import com.goat.common.utils.SnowflakeUtil;
 import com.goat.userservice.constants.KafkaTopicConstant;
 import com.goat.userservice.model.dto.FriendApplicationNotificationDTO;
+import com.goat.userservice.model.dto.NewGroupSessionNotificationDTO;
 import com.goat.userservice.model.dto.NewSessionNotificationDTO;
 import com.goat.userservice.model.dto.SystemNotificationMessage;
 import com.goat.userservice.service.NotificationService;
@@ -149,6 +151,31 @@ public class NotificationServiceImpl implements NotificationService {
 
         } catch (Exception e) {
             log.error("发送新会话通知失败，用户ID: {}, 会话ID: {}, 错误: {}", userId, sessionId, e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public void pushGroupNewSession(Long userID, Long sessionId, NewGroupSessionNotificationDTO notification){
+        try {
+            SystemNotificationMessage message=new SystemNotificationMessage();
+            message.setMessageId(generateMessageId());
+            message.setSessionId(sessionId);
+            message.setSenderId(null);//系统消息
+            message.setReceiverId(userID);
+            message.setType(MessageTypeConstant.TYPE_SYSTEM_NEW_GROUP_SESSION);
+            message.setSessionType(SessionTypeConstant.GROUP_TYPE);//群聊
+            message.setTimestamp(System.currentTimeMillis());
+
+            Map<String,Object> body=new HashMap<>();
+            body.put("sessionName",notification.getSessionName());
+            body.put("avatar",notification.getAvatar());
+            body.put("creatorId",notification.getCreatorId());
+            body.put("membersCount",notification.getMembersCount());
+            message.setBody(body);
+
+            sendNotification(message,"新群聊会话通知");
+        }catch (Exception e){
+            log.error("发送新群聊会话通知失败，用户ID: {}, 会话ID: {}, 错误: {}", userID, sessionId, e.getMessage(), e);
         }
     }
 }

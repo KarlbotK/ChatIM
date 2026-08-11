@@ -1,4 +1,4 @@
-package com.goat.userservice.model.dto;
+package com.goat.userservice.model.dto.response;
 
 import java.io.Serial;
 import java.io.Serializable;

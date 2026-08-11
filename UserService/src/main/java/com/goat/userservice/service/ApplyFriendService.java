@@ -4,7 +4,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.goat.common.model.dto.PageRequest;
 import com.goat.userservice.model.dto.ApplyFriendDTO;
-import com.goat.userservice.model.dto.ModifyFriendApplicationResponse;
+import com.goat.userservice.model.dto.response.ModifyFriendApplicationResponse;
 import com.goat.userservice.model.entity.ApplyFriend;
 
 /**

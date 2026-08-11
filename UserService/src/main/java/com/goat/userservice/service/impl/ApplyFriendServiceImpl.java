@@ -18,7 +18,7 @@ import com.goat.userservice.mapper.ApplyFriendMapper;
 import com.goat.userservice.model.dto.ApplyFriendDTO;
 import com.goat.userservice.model.dto.FriendApplicationNotificationDTO;
 import com.goat.userservice.model.dto.FriendRequestCreationEvent;
-import com.goat.userservice.model.dto.ModifyFriendApplicationResponse;
+import com.goat.userservice.model.dto.response.ModifyFriendApplicationResponse;
 import com.goat.userservice.model.entity.ApplyFriend;
 import com.goat.userservice.model.entity.Friend;
 import com.goat.userservice.model.entity.User;
