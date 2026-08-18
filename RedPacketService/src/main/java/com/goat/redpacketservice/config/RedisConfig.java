@@ -157,6 +157,11 @@ public class RedisConfig {
                     startIdx = stopIdx + 1
                 end
 
+                -- 统计完成后立即清空金额池。
+                -- 计算和清空都在同一个 Lua 脚本中，领取脚本无法在两步之间插入，
+                -- 避免过期退款已经算入某份金额后，用户又把同一份金额抢走。
+                redis.call('DEL', lkey)
+
                 return sum
                 """;
         script.setScriptText(luaScript);

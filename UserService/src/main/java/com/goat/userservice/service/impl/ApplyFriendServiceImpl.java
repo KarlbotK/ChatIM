@@ -240,7 +240,15 @@ public class ApplyFriendServiceImpl extends ServiceImpl<ApplyFriendMapper, Apply
                     KafkaTopicConstant.TOPIC_FRIEND_REQUEST_CREATION,
                     String.valueOf(applyFriendId),
                     JSONUtil.toJsonStr(event)
-            );
+            ).whenComplete((result, ex) -> {
+                if (ex != null) {
+                    log.error("好友申请过期注册事件发送失败，申请ID：{}，原因：{}",
+                            applyFriendId, ex.getMessage(), ex);
+                } else {
+                    log.info("好友申请过期注册事件发送成功，申请ID：{}，offset：{}",
+                            applyFriendId, result.getRecordMetadata().offset());
+                }
+            });
 
             log.info("注册好友申请过期任务成功，申请ID：{}，过期时间：{}", applyFriendId, expireTime);
         } catch (Exception e) {

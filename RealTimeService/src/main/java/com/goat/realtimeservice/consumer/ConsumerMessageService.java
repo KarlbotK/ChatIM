@@ -27,13 +27,16 @@ public class ConsumerMessageService {
 
     @KafkaListener(topics = "message-topic", groupId = "infinite-chat-push-group-0")
     public void consume(String message) {
-        System.out.println("收到消息：" + message);
-        MessageRequest messageRequest = JSONUtil.toBean(message, MessageRequest.class);
-        System.out.println("收到消息：" + messageRequest);
-        if (messageRequest.getSessionType() == SessionTypeConstant.SIGNAL_TYPE) {
-            signalMessage(messageRequest);
-        } else if (messageRequest.getSessionType() == SessionTypeConstant.GROUP_TYPE) {
-            groupMessage(messageRequest);
+        try {
+            log.info("收到消息推送事件：{}", message);
+            MessageRequest messageRequest = JSONUtil.toBean(message, MessageRequest.class);
+            if (messageRequest.getSessionType() == SessionTypeConstant.SIGNAL_TYPE) {
+                signalMessage(messageRequest);
+            } else if (messageRequest.getSessionType() == SessionTypeConstant.GROUP_TYPE) {
+                groupMessage(messageRequest);
+            }
+        } catch (Exception e) {
+            log.error("消息推送事件处理失败：{}", message, e);
         }
     }
 

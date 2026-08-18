@@ -77,28 +77,36 @@ public class WebSocketHandler extends SimpleChannelInboundHandler<TextWebSocketF
         messageRequest.setCreatedTime(new Date());
 
         // 消息存储, 存储只存储一次，避免重复消费
-        kafkaTemplate.send(CommonConstant.KAFKA_MESSAGE_TOPIC_STORE, JSONUtil.toJsonStr(messageRequest)).whenComplete((success, failure) -> {
-            if (failure != null) {
-                // 生产者生产失败
-                System.err.println("生产者生产失败: " + failure.getMessage());
-                // 记录日志、告警、补偿等
-            } else {
-                // 生产者生产成功
-                System.out.println("生产者生产成功，offset: " + success.getRecordMetadata().offset());
-            }
-        });
+        try {
+            kafkaTemplate.send(CommonConstant.KAFKA_MESSAGE_TOPIC_STORE, JSONUtil.toJsonStr(messageRequest)).whenComplete((success, failure) -> {
+                if (failure != null) {
+                    log.error("消息存储事件发送失败，messageId: {}，原因: {}",
+                            messageRequest.getMessageId(), failure.getMessage(), failure);
+                } else {
+                    log.info("消息存储事件发送成功，messageId: {}，offset: {}",
+                            messageRequest.getMessageId(), success.getRecordMetadata().offset());
+                }
+            });
+        } catch (Exception e) {
+            log.error("消息存储事件发送异常，messageId: {}，原因: {}",
+                    messageRequest.getMessageId(), e.getMessage(), e);
+        }
 
         // 消息推送消息
-        kafkaTemplate.send(CommonConstant.KAFKA_MESSAGE_TOPIC_PUSH, messageRequest.getSessionId().toString(), JSONUtil.toJsonStr(messageRequest)).whenComplete((success, failure) -> {
-            if (failure != null) {
-                // 生产者生产失败
-                System.err.println("生产者生产失败: " + failure.getMessage());
-                // 记录日志、告警、补偿等
-            } else {
-                // 生产者生产成功
-                System.out.println("生产者生产成功消息推送，offset: " + success.getRecordMetadata().offset());
-            }
-        });
+        try {
+            kafkaTemplate.send(CommonConstant.KAFKA_MESSAGE_TOPIC_PUSH, messageRequest.getSessionId().toString(), JSONUtil.toJsonStr(messageRequest)).whenComplete((success, failure) -> {
+                if (failure != null) {
+                    log.error("消息推送事件发送失败，messageId: {}，原因: {}",
+                            messageRequest.getMessageId(), failure.getMessage(), failure);
+                } else {
+                    log.info("消息推送事件发送成功，messageId: {}，offset: {}",
+                            messageRequest.getMessageId(), success.getRecordMetadata().offset());
+                }
+            });
+        } catch (Exception e) {
+            log.error("消息推送事件发送异常，messageId: {}，原因: {}",
+                    messageRequest.getMessageId(), e.getMessage(), e);
+        }
     }
 
     @Override

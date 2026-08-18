@@ -113,7 +113,15 @@ public class ExpirationDispatcher {
                                 KafkaConfig.TOPIC_REDPACKET_EXPIRATION,
                                 redPacketId,
                                 redPacketId
-                        );
+                        ).whenComplete((result, ex) -> {
+                            if (ex != null) {
+                                log.error("红包过期事件发送失败，红包ID: {}，原因: {}",
+                                        redPacketId, ex.getMessage(), ex);
+                            } else {
+                                log.info("红包过期事件发送成功，红包ID: {}，offset: {}",
+                                        redPacketId, result.getRecordMetadata().offset());
+                            }
+                        });
                     } catch (Exception e) {
                         log.error("发送红包过期事件到Kafka失败，红包ID: {}", redPacketId, e);
                     }
