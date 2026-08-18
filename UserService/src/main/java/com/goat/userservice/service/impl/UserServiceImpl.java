@@ -1,9 +1,11 @@
 package com.goat.userservice.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.goat.common.constant.CommonConstant;
 import com.goat.common.common.ErrorCode;
+import com.goat.common.model.vo.UserInfosResponse;
 import com.goat.userservice.constants.UserConstant;
 import com.goat.userservice.loadbalancer.NettyServiceLocator;
 import com.goat.userservice.model.dto.request.UpdateAvatarRequest;
@@ -34,6 +36,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.DigestUtils;
 
 
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -230,5 +235,28 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>
         }
         user.setAvatar(updateAvatarRequest.getUri());
         return this.updateById(user);
+    }
+
+    @Override
+    public Map<Long, UserInfosResponse> getUserInfos(List<Long> userIds) {
+        if (userIds == null || userIds.isEmpty()) {
+            return new HashMap<>();
+        }
+
+        Map<Long, UserInfosResponse> userInfosResponses = new HashMap<>();
+
+        // 使用 Lambda Wrapper
+        LambdaQueryWrapper<User> queryWrapper = new LambdaQueryWrapper<>();
+        queryWrapper.in(User::getUserId, userIds);
+        List<User> users = this.list(queryWrapper);
+
+        if (users != null && !users.isEmpty()) {
+            users.forEach(user -> {
+                UserInfosResponse userInfosResponse = new UserInfosResponse();
+                BeanUtil.copyProperties(user, userInfosResponse);
+                userInfosResponses.put(user.getUserId(), userInfosResponse);
+            });
+        }
+        return userInfosResponses;
     }
 }

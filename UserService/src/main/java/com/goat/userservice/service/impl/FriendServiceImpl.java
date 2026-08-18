@@ -692,16 +692,19 @@ public class FriendServiceImpl extends ServiceImpl<FriendMapper, Friend> impleme
         // 3. 创建双向好友关系
         createFriendRelations(recipient.getUserId(), friendId);
 
-        // 4. 创建会话
+        // 4. 清除双方可能存在的“非好友”旧缓存
+        evictFriendCache(recipient.getUserId(), friendId);
+
+        // 5. 创建会话
         Long sessionId = createSession();
 
-        // 5. 创建用户会话关系
+        // 6. 创建用户会话关系
         createUserSessions(recipient.getUserId(), friendId, sessionId);
 
-        // 6. 发送Kafka通知给申请者
+        // 7. 发送Kafka通知给申请者
         sendNewSessionNotification(friendId, recipient, sessionId);
 
-        // 7. 构建响应对象
+        // 8. 构建响应对象
         return buildModifyFriendApplicationResponse(applicant, sessionId);
     }
 

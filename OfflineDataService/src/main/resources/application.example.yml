@@ -31,6 +31,9 @@ spring:
     nacos:
       discovery:
         server-addr: ${NACOS_SERVER_ADDR:localhost:18375}
+    openfeign:
+      circuitbreaker:
+        enabled: ${FEIGN_CIRCUITBREAKER_ENABLED:true}
 
 server:
   port: ${SERVER_PORT:8101}

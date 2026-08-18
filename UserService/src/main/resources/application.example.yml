@@ -24,6 +24,24 @@ spring:
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
       timeout: 30000
+      lettuce:
+        pool:
+          min-idle: ${REDIS_POOL_MIN_IDLE:4}
+          max-idle: ${REDIS_POOL_MAX_IDLE:8}
+          max-active: ${REDIS_POOL_MAX_ACTIVE:8}
+          max-wait: ${REDIS_POOL_MAX_WAIT:5000ms}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      retries: 3
+    consumer:
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      auto-offset-reset: latest
+      enable-auto-commit: true
   cloud:
     nacos:
       discovery:
@@ -43,3 +61,7 @@ minio:
   url: ${MINIO_URL:http://localhost:9000}
   access-key: ${MINIO_ACCESS_KEY:}
   secret-key: ${MINIO_SECRET_KEY:}
+
+snowflake:
+  workerId: ${SNOWFLAKE_WORKER_ID:1}
+  datacenterId: ${SNOWFLAKE_DATACENTER_ID:1}

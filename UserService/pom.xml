@@ -82,6 +82,12 @@
             <artifactId>shedlock-provider-redis-spring</artifactId>
             <version>4.42.0</version>
         </dependency>
+        <dependency>
+            <groupId>com.goat</groupId>
+            <artifactId>RedPacketService</artifactId>
+            <version>0.0.1-SNAPSHOT</version>
+            <scope>compile</scope>
+        </dependency>
 
     </dependencies>
 

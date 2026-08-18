@@ -2,6 +2,7 @@ package com.goat.userservice.service;
 
 
 import com.baomidou.mybatisplus.extension.service.IService;
+import com.goat.common.model.vo.UserInfosResponse;
 import com.goat.userservice.model.dto.request.UpdateAvatarRequest;
 import com.goat.userservice.model.dto.request.UserLoginCodeRequest;
 import com.goat.userservice.model.dto.request.UserLoginPasswordRequest;
@@ -10,6 +11,9 @@ import com.goat.userservice.model.entity.User;
 import com.goat.userservice.model.vo.LoginAndRegisterResponse;
 import com.goat.userservice.model.vo.TokenResponse;
 import com.goat.userservice.model.vo.UploadUrlResponse;
+
+import java.util.List;
+import java.util.Map;
 
 /**
 * @author KARLK
@@ -28,5 +32,6 @@ public interface UserService extends IService<User> {
     TokenResponse refreshToken(String refreshToken);
     UploadUrlResponse uploadUrl(String fileName) ;
     Boolean updateAvatar(UpdateAvatarRequest updateAvatarRequest);
+    Map<Long, UserInfosResponse> getUserInfos(List<Long> userIds);
 
 }
