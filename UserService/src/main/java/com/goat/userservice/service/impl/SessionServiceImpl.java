@@ -4,7 +4,9 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 
 import com.goat.common.common.ErrorCode;
+import com.goat.common.constant.CommonConstant;
 import com.goat.common.constant.SessionTypeConstant;
+import com.goat.common.enums.UserSessionStatusEnum;
 import com.goat.common.exception.ThrowUtils;
 import com.goat.common.utils.SnowflakeUtil;
 import com.goat.userservice.constants.FriendStatusEnum;
@@ -20,6 +22,7 @@ import com.goat.userservice.model.entity.User;
 import com.goat.userservice.model.entity.UserSession;
 import com.goat.userservice.service.NotificationService;
 import com.goat.userservice.service.SessionService;
+import com.goat.userservice.utils.OssUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
@@ -38,25 +41,32 @@ public class SessionServiceImpl extends ServiceImpl<SessionMapper, Session>
     private final FriendMapper friendMapper;
     private final UserSessionMapper userSessionMapper;
     private final NotificationService notificationService;
+    private final OssUtils ossUtils;
 
     public SessionServiceImpl(SessionMapper sessionMapper,
                               UserServiceImpl userService,
                               FriendMapper friendMapper,
                               UserSessionMapper userSessionMapper,
-                              NotificationService notificationService) {
+                              NotificationService notificationService,
+                              OssUtils ossUtils) {
         this.sessionMapper = sessionMapper;
         this.userService = userService;
         this.friendMapper = friendMapper;
         this.userSessionMapper=userSessionMapper;
         this.notificationService=notificationService;
+        this.ossUtils=ossUtils;
     }
 
     private static final int USER_ROLE_GROUP_OWNER = 0;
     private static final int USER_ROLE_GROUP_MEMBER = 2;
     private static final int USER_STATUS_NORMAL = 0;
     private static final int SESSION_STATUS_NORMAL = 0;
-    private static final String DEFAULT_GROUP_AVATAR_URL =
-            "http://localhost:9000/infinitechat/group/default.jpg";
+    /** MinIO 中的默认群头像对象名，访问地址由 minio.url 配置生成。 */
+    private static final String DEFAULT_GROUP_AVATAR_OBJECT_NAME = "group/default-avatar.jpg";
+
+    private String defaultGroupAvatarUrl() {
+        return ossUtils.downUrl(CommonConstant.BUCKET_NAME, DEFAULT_GROUP_AVATAR_OBJECT_NAME);
+    }
 
 
     // SessionServiceImpl.java
@@ -189,7 +199,7 @@ public class SessionServiceImpl extends ServiceImpl<SessionMapper, Session>
         session.setName(groupName);
         session.setType(SessionTypeConstant.GROUP_TYPE);   // 1
         session.setStatus(SESSION_STATUS_NORMAL);          // 0
-        session.setAvatar(DEFAULT_GROUP_AVATAR_URL);
+        session.setAvatar(defaultGroupAvatarUrl());
         session.setCreatedTime(new Date());
         session.setUpdatedTime(new Date());
         return session;
@@ -212,7 +222,7 @@ public class SessionServiceImpl extends ServiceImpl<SessionMapper, Session>
         notification.setCreatorId(creatorId);
         notification.setSessionName(groupName);
         notification.setMembersCount(membersCount);
-        notification.setAvatar(DEFAULT_GROUP_AVATAR_URL);
+        notification.setAvatar(defaultGroupAvatarUrl());
         return notification;
     }
     // SessionServiceImpl.java

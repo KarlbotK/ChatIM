@@ -1,9 +1,12 @@
 package com.goat.userservice.model.entity;
 
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
+import java.io.Serial;
+import java.io.Serializable;
 import java.util.Date;
 
 /**
@@ -12,7 +15,7 @@ import java.util.Date;
  */
 @TableName(value ="user_session")
 @Data
-public class UserSession {
+public class UserSession implements Serializable {
     /**
      * 用户 id
      */
@@ -44,4 +47,8 @@ public class UserSession {
      * 更新时间
      */
     private Date updatedTime;
+
+    @TableField(exist = false)
+    @Serial
+    private static final long serialVersionUID = 1L;
 }
