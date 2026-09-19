@@ -54,6 +54,16 @@
 - The final demo and real-mode passes reported no browser console errors or warnings.
 - Evidence screenshots: `output/playwright/friend-flow/friend-profile.png` and `output/playwright/friend-flow/friend-applications.png`.
 
+### Round 4: basic groups
+
+- Playwright verified the demo flow from the contacts tab through the group list, member selection, creation progress, partial-failure result, group chat, group profile, and follow-up invitations.
+- A result-state issue was found during the first invitation pass: a successfully invited friend disappeared from the result list as soon as the parent group state updated. The picker now keeps the submitted member snapshot, and the repeated pass displays both successful and failed invitees.
+- The partial-failure path was checked with one successful and one failed invitee. Successful members update the stored member count while failed members remain clearly identified for a later retry.
+- A separate real-mode pass validated `POST /api/group` and `POST /api/group/invite`, including creator/session/invitee IDs and both token headers. The accepted request bodies were `{"creatorId":"9001","memberIds":["101","102"]}` and `{"sessionId":"88001","inviterId":"9001","inviteeIds":["103"]}`.
+- iPhone and Pixel 10 screenshots were inspected for header clearance, result-card density, member rows, primary actions, and bottom safe areas.
+- The final demo and real-mode browser sessions reported no console errors or warnings.
+- Evidence screenshots: `output/playwright/group-create-result.png`, `output/playwright/group-invite-result.png`, and `output/playwright/group-invite-pixel.png`.
+
 ## Comparison History
 
 1. Initial browser pass found a P2 layout issue: browser focus scrolling moved the framed device itself after authentication, which shifted the main page upward and left the simulated keyboard visible in the clipped frame.

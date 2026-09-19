@@ -69,6 +69,13 @@ import {
   type FriendApplication,
   type FriendProfile,
 } from "./contacts";
+import {
+  GroupApiError,
+  createGroup,
+  inviteGroupMembers,
+  type CreateGroupResult,
+  type InviteGroupResult,
+} from "./groups";
 
 type Phase = "booting" | "signed-out" | "signed-in";
 type LoginMode = "password" | "code";
@@ -686,6 +693,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
   const [drafts, setDrafts] = useState<Record<string, string>>(() => loadDrafts(session.userId));
   const [contacts, setContacts] = useState<Contact[]>(() => loadContacts(session.userId));
   const [applications, setApplications] = useState<FriendApplication[]>(() => loadApplications(session.userId));
+  const [groups, setGroups] = useState<GroupRecord[]>(() => loadGroups(session.userId));
   const [contactSurface, setContactSurface] = useState<ContactSurface>(null);
   const [notice, setNotice] = useState("");
 
@@ -721,6 +729,10 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
   useEffect(() => {
     saveContactState(session.userId, contacts, applications);
   }, [applications, contacts, session.userId]);
+
+  useEffect(() => {
+    saveGroups(session.userId, groups);
+  }, [groups, session.userId]);
 
   useEffect(() => {
     if (demoModeEnabled) return;
@@ -791,6 +803,59 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
     return next;
   };
 
+  const openGroupConversation = (group: GroupRecord) => {
+    setContactSurface(null);
+    const existing = conversations.find((item) => item.id === group.sessionId);
+    if (existing) {
+      openConversation(existing.id);
+      return;
+    }
+    const nextConversation: Conversation = {
+      id: group.sessionId,
+      name: group.name,
+      avatar: group.avatar,
+      avatarTone: "green",
+      preview: "群聊创建成功，和大家打个招呼吧",
+      time: "刚刚",
+      unread: 0,
+      group: true,
+      membersCount: group.members.length,
+    };
+    setConversations((items) => [nextConversation, ...items]);
+    setMessages((items) => ({ ...items, [group.sessionId]: [] }));
+    setActiveConversationId(group.sessionId);
+  };
+
+  const applyCreatedGroup = (result: CreateGroupResult, selectedContacts: Contact[]) => {
+    const failedIds = new Set(result.failedMemberIds.map(String));
+    const successfulContacts = selectedContacts.filter((contact) => !failedIds.has(contact.id));
+    const group: GroupRecord = {
+      sessionId: String(result.sessionId),
+      name: result.sessionName,
+      avatar: result.sessionName.slice(0, 1) || "群",
+      avatarUrl: result.avatar || null,
+      creatorId: String(result.creatorId),
+      members: [
+        { id: String(session.userId), name: session.nickname, avatar: session.nickname.slice(0, 1) || "我", role: "owner" },
+        ...successfulContacts.map((contact) => ({ id: contact.id, name: contact.name, avatar: contact.avatar, role: "member" as const })),
+      ],
+    };
+    setGroups((items) => [group, ...items.filter((item) => item.sessionId !== group.sessionId)]);
+    setConversations((items) => [{
+      id: group.sessionId,
+      name: group.name,
+      avatar: group.avatar,
+      avatarTone: "green",
+      preview: "群聊创建成功，和大家打个招呼吧",
+      time: "刚刚",
+      unread: 0,
+      group: true,
+      membersCount: group.members.length,
+    }, ...items.filter((item) => item.id !== group.sessionId)]);
+    setMessages((items) => ({ ...items, [group.sessionId]: [] }));
+    setContactSurface({ kind: "group-result", group, failedIds: [...failedIds] });
+  };
+
   if (contactSurface?.kind === "search") {
     return (
       <FriendSearchScreen
@@ -844,10 +909,94 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
     );
   }
 
+  if (contactSurface?.kind === "groups") {
+    return (
+      <GroupListScreen
+        groups={groups}
+        onBack={() => setContactSurface(null)}
+        onCreate={() => setContactSurface({ kind: "group-create" })}
+        onOpen={openGroupConversation}
+      />
+    );
+  }
+
+  if (contactSurface?.kind === "group-create") {
+    return (
+      <GroupMemberPicker
+        mode="create"
+        session={session}
+        contacts={contacts}
+        onBack={() => setContactSurface({ kind: "groups" })}
+        onCreated={applyCreatedGroup}
+      />
+    );
+  }
+
+  if (contactSurface?.kind === "group-result") {
+    return (
+      <GroupCreateResultScreen
+        group={contactSurface.group}
+        failedIds={contactSurface.failedIds}
+        contacts={contacts}
+        onBack={() => setContactSurface({ kind: "groups" })}
+        onEnter={() => openGroupConversation(contactSurface.group)}
+      />
+    );
+  }
+
+  if (contactSurface?.kind === "group-settings") {
+    const group = groups.find((item) => item.sessionId === contactSurface.groupId);
+    if (group) {
+      return (
+        <GroupSettingsScreen
+          group={group}
+          onBack={() => setContactSurface(null)}
+          onInvite={() => setContactSurface({ kind: "group-invite", groupId: group.sessionId })}
+        />
+      );
+    }
+  }
+
+  if (contactSurface?.kind === "group-invite") {
+    const group = groups.find((item) => item.sessionId === contactSurface.groupId);
+    if (group) {
+      return (
+        <GroupMemberPicker
+          mode="invite"
+          session={session}
+          contacts={contacts.filter((contact) => !group.members.some((member) => member.id === contact.id))}
+          group={group}
+          onBack={() => setContactSurface({ kind: "group-settings", groupId: group.sessionId })}
+          onInvited={(result, selectedContacts) => {
+            const successful = new Set(result.successIds.map(String));
+            setGroups((items) => items.map((item) => item.sessionId === group.sessionId ? {
+              ...item,
+              members: [
+                ...item.members,
+                ...selectedContacts
+                  .filter((contact) => successful.has(contact.id))
+                  .map((contact) => ({ id: contact.id, name: contact.name, avatar: contact.avatar, role: "member" as const })),
+              ],
+            } : item));
+            setConversations((items) => items.map((item) => item.id === group.sessionId
+              ? { ...item, membersCount: item.membersCount ? item.membersCount + successful.size : group.members.length + successful.size }
+              : item));
+          }}
+        />
+      );
+    }
+  }
+
   if (activeConversation) {
     return (
       <ChatScreen
         conversation={activeConversation}
+        onOpenDetails={() => {
+          if (activeConversation.group) {
+            const existingGroup = groups.find((item) => item.sessionId === activeConversation.id);
+            if (existingGroup) setContactSurface({ kind: "group-settings", groupId: activeConversation.id });
+          }
+        }}
         messages={messages[activeConversation.id] ?? []}
         draft={drafts[activeConversation.id] ?? activeConversation.draft ?? ""}
         onDraftChange={(value) => setDrafts((items) => ({ ...items, [activeConversation.id]: value }))}
@@ -971,7 +1120,13 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
                   badge={applicationUnread > 0 ? String(applicationUnread) : undefined}
                   onClick={() => setContactSurface({ kind: "applications" })}
                 />
-                <ShortcutRow icon={<ChatBubbleIcon />} tone="green" label="群聊" meta="3 个群聊" onClick={() => setNotice("群聊创建将在下一轮接入")} />
+                <ShortcutRow
+                  icon={<ChatBubbleIcon />}
+                  tone="green"
+                  label="群聊"
+                  meta={`${groups.length} 个群聊`}
+                  onClick={() => setContactSurface({ kind: "groups" })}
+                />
               </section>
               <section className="contact-section">
                 <div className="section-heading"><span>好友</span><small>{filteredContacts.length} 位</small></div>
@@ -1056,6 +1211,11 @@ type ContactSurface =
   | { kind: "search" }
   | { kind: "applications" }
   | { kind: "profile"; contact?: Contact; profile?: FriendProfile; returnTo: "search" | "contacts" }
+  | { kind: "groups" }
+  | { kind: "group-create" }
+  | { kind: "group-result"; group: GroupRecord; failedIds: string[] }
+  | { kind: "group-settings"; groupId: string }
+  | { kind: "group-invite"; groupId: string }
   | null;
 
 type Conversation = {
@@ -1072,6 +1232,23 @@ type Conversation = {
   failed?: boolean;
   draft?: string;
   group?: boolean;
+  membersCount?: number;
+};
+
+type GroupMember = {
+  id: string;
+  name: string;
+  avatar: string;
+  role: "owner" | "member";
+};
+
+type GroupRecord = {
+  sessionId: string;
+  name: string;
+  avatar: string;
+  avatarUrl?: string | null;
+  creatorId: string;
+  members: GroupMember[];
 };
 
 type ChatMessage = {
@@ -1094,9 +1271,9 @@ type Contact = {
 
 const demoConversations: Conversation[] = [
   { id: "c-chen", name: "陈知夏", avatar: "夏", avatarTone: "terracotta", preview: "照片收到了，周末见呀", time: "10:42", unread: 2, presence: "在线", pinned: true },
-  { id: "c-studio", name: "山野摄影社", avatar: "山", avatarTone: "green", preview: "林一：我把路线发到群里了", time: "09:18", unread: 8, muted: true, group: true },
+  { id: "c-studio", name: "山野摄影社", avatar: "山", avatarTone: "green", preview: "林一：我把路线发到群里了", time: "09:18", unread: 8, muted: true, group: true, membersCount: 5 },
   { id: "c-lin", name: "林一", avatar: "林", avatarTone: "blue", preview: "好，等你忙完再说", time: "昨天", unread: 0, presence: "12 分钟前在线" },
-  { id: "c-family", name: "家人", avatar: "家", avatarTone: "gold", preview: "[图片]", time: "周三", unread: 0, muted: true, group: true },
+  { id: "c-family", name: "家人", avatar: "家", avatarTone: "gold", preview: "[图片]", time: "周三", unread: 0, muted: true, group: true, membersCount: 4 },
   { id: "c-muji", name: "木木", avatar: "木", avatarTone: "violet", preview: "这周的展览值得去看看", time: "周二", unread: 0, draft: "周六下午可以吗？", presence: "在线" },
 ];
 
@@ -1124,6 +1301,34 @@ const demoContacts: Contact[] = [
   { id: "u-muji", conversationId: "c-muji", name: "木木", avatar: "木", avatarTone: "violet", note: "常联系", presence: "在线" },
   { id: "u-qing", conversationId: "c-qing", name: "青禾", avatar: "青", avatarTone: "green", note: "旅行认识的朋友", presence: "昨天在线" },
   { id: "u-anan", conversationId: "c-anan", name: "安安", avatar: "安", avatarTone: "gold", note: "大学同学", presence: "3 小时前在线" },
+];
+
+const demoGroups: GroupRecord[] = [
+  {
+    sessionId: "c-studio",
+    name: "山野摄影社",
+    avatar: "山",
+    creatorId: "demo-user-001",
+    members: [
+      { id: "demo-user-001", name: "旅行中的小鹿", avatar: "鹿", role: "owner" },
+      { id: "u-chen", name: "陈知夏", avatar: "夏", role: "member" },
+      { id: "u-lin", name: "林一", avatar: "林", role: "member" },
+      { id: "u-muji", name: "木木", avatar: "木", role: "member" },
+      { id: "u-qing", name: "青禾", avatar: "青", role: "member" },
+    ],
+  },
+  {
+    sessionId: "c-family",
+    name: "家人",
+    avatar: "家",
+    creatorId: "demo-user-001",
+    members: [
+      { id: "demo-user-001", name: "旅行中的小鹿", avatar: "鹿", role: "owner" },
+      { id: "family-1", name: "妈妈", avatar: "妈", role: "member" },
+      { id: "family-2", name: "爸爸", avatar: "爸", role: "member" },
+      { id: "family-3", name: "小雨", avatar: "雨", role: "member" },
+    ],
+  },
 ];
 
 const demoApplications: FriendApplication[] = [
@@ -1588,12 +1793,293 @@ function formatApplicationTime(value: string) {
     : { month: "numeric", day: "numeric" }).format(date);
 }
 
+function GroupListScreen({
+  groups,
+  onBack,
+  onCreate,
+  onOpen,
+}: {
+  groups: GroupRecord[];
+  onBack: () => void;
+  onCreate: () => void;
+  onOpen: (group: GroupRecord) => void;
+}) {
+  return (
+    <div className="subpage-screen">
+      <SubpageHeader
+        title="群聊"
+        subtitle={`${groups.length} 个群聊`}
+        onBack={onBack}
+        action={<button type="button" onClick={onCreate}>创建</button>}
+      />
+      <MobileScroll className="subpage-scroll">
+        <main className="subpage-content group-list-content">
+          <button type="button" className="create-group-card" onClick={onCreate}>
+            <span><PlusIcon /></span>
+            <div><strong>创建新的群聊</strong><small>选择好友，一起开始聊天</small></div>
+            <ChevronRightIcon />
+          </button>
+          {groups.length > 0 ? (
+            <section className="group-list" aria-label="群聊列表">
+              {groups.map((group) => (
+                <button type="button" className="group-list-row" key={group.sessionId} onClick={() => onOpen(group)}>
+                  <Avatar label={group.avatar} tone="green" />
+                  <span><strong>{group.name}</strong><small>{group.members.length} 位成员</small></span>
+                  <span className="group-avatar-stack" aria-hidden="true">
+                    {group.members.slice(0, 3).map((member) => <i key={member.id}>{member.avatar}</i>)}
+                  </span>
+                  <ChevronRightIcon />
+                </button>
+              ))}
+            </section>
+          ) : (
+            <section className="search-guide group-empty"><ChatBubbleIcon /><h2>还没有群聊</h2><p>选择一位或多位好友，就能创建群聊。</p></section>
+          )}
+        </main>
+      </MobileScroll>
+    </div>
+  );
+}
+
+type GroupMemberPickerProps = {
+  session: AuthSession;
+  contacts: Contact[];
+  onBack: () => void;
+} & (
+  | {
+      mode: "create";
+      group?: never;
+      onCreated: (result: CreateGroupResult, selectedContacts: Contact[]) => void;
+      onInvited?: never;
+    }
+  | {
+      mode: "invite";
+      group: GroupRecord;
+      onCreated?: never;
+      onInvited: (result: InviteGroupResult, selectedContacts: Contact[]) => void;
+    }
+);
+
+function GroupMemberPicker(props: GroupMemberPickerProps) {
+  const [query, setQuery] = useState("");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState("");
+  const [inviteResult, setInviteResult] = useState<InviteGroupResult | null>(null);
+  const [submittedContacts, setSubmittedContacts] = useState<Contact[]>([]);
+  const selectedContacts = props.contacts.filter((contact) => selectedIds.includes(contact.id));
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const filteredContacts = props.contacts.filter((contact) =>
+    `${contact.name} ${contact.note}`.toLocaleLowerCase().includes(normalizedQuery),
+  );
+
+  const toggle = (contactId: string) => {
+    setSelectedIds((items) => items.includes(contactId)
+      ? items.filter((id) => id !== contactId)
+      : [...items, contactId]);
+    setFeedback("");
+  };
+
+  const submit = async () => {
+    if (selectedContacts.length === 0 || busy) return;
+    setBusy(true);
+    setFeedback("");
+    try {
+      if (props.mode === "create") {
+        const result = await createGroup(props.session, selectedIds);
+        props.onCreated(result, selectedContacts);
+      } else {
+        const result = await inviteGroupMembers(props.session, props.group.sessionId, selectedIds);
+        setSubmittedContacts(selectedContacts);
+        props.onInvited(result, selectedContacts);
+        setInviteResult(result);
+      }
+    } catch (error) {
+      setFeedback(toGroupErrorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (props.mode === "invite" && inviteResult) {
+    const successIds = new Set(inviteResult.successIds.map(String));
+    const failedIds = new Set(inviteResult.failedIds.map(String));
+    const resultContacts = submittedContacts.length > 0 ? submittedContacts : selectedContacts;
+    return (
+      <div className="subpage-screen">
+        <SubpageHeader title="邀请结果" subtitle={props.group.name} onBack={props.onBack} />
+        <MobileScroll className="subpage-scroll">
+          <main className="subpage-content group-result-content">
+            <section className="group-result-hero compact">
+              <span className="result-check"><CheckIcon /></span>
+              <h1>邀请已处理</h1>
+              <p>{successIds.size} 位好友已加入，{failedIds.size} 位未能加入。</p>
+            </section>
+            {resultContacts.map((contact) => (
+              <div className="invite-result-row" key={contact.id}>
+                <Avatar label={contact.avatar} tone={contact.avatarTone} />
+                <span><strong>{contact.name}</strong><small>{successIds.has(contact.id) ? "已加入群聊" : "邀请失败或已在群内"}</small></span>
+                <b className={successIds.has(contact.id) ? "success" : "failed"}>{successIds.has(contact.id) ? "成功" : "未加入"}</b>
+              </div>
+            ))}
+            <button type="button" className="group-primary-action" onClick={props.onBack}>返回群资料</button>
+          </main>
+        </MobileScroll>
+      </div>
+    );
+  }
+
+  return (
+    <div className="subpage-screen">
+      <SubpageHeader
+        title={props.mode === "create" ? "创建群聊" : "邀请好友"}
+        subtitle={selectedIds.length > 0 ? `已选择 ${selectedIds.length} 位` : "从好友中选择"}
+        onBack={props.onBack}
+        action={(
+          <button type="button" disabled={selectedIds.length === 0 || busy} onClick={() => void submit()}>
+            {busy ? "处理中" : props.mode === "create" ? `创建${selectedIds.length ? ` (${selectedIds.length})` : ""}` : `邀请${selectedIds.length ? ` (${selectedIds.length})` : ""}`}
+          </button>
+        )}
+      />
+      <MobileScroll className="subpage-scroll">
+        <main className="subpage-content group-picker-content">
+          <SearchField value={query} onChange={setQuery} placeholder="搜索好友" />
+          {selectedContacts.length > 0 ? (
+            <section className="selected-member-strip" aria-label="已选择成员">
+              {selectedContacts.map((contact) => (
+                <button type="button" key={contact.id} onClick={() => toggle(contact.id)} aria-label={`取消选择${contact.name}`}>
+                  <Avatar label={contact.avatar} tone={contact.avatarTone} />
+                  <small>{contact.name}</small>
+                  <i><Cross2Icon /></i>
+                </button>
+              ))}
+            </section>
+          ) : (
+            <p className="group-picker-tip">{props.mode === "create" ? "至少选择 1 位好友创建群聊" : "选择还未加入群聊的好友"}</p>
+          )}
+          {feedback ? <p className="application-feedback error" role="alert">{feedback}</p> : null}
+          <section className="group-contact-picker" aria-label="好友选择列表">
+            {filteredContacts.map((contact) => {
+              const selected = selectedIds.includes(contact.id);
+              return (
+                <button
+                  type="button"
+                  className={selected ? "selected" : ""}
+                  key={contact.id}
+                  onClick={() => toggle(contact.id)}
+                  aria-pressed={selected}
+                >
+                  <Avatar label={contact.avatar} tone={contact.avatarTone} online={contact.presence === "在线"} />
+                  <span><strong>{contact.name}</strong><small>{contact.note}</small></span>
+                  <i className="member-check">{selected ? <CheckIcon /> : null}</i>
+                </button>
+              );
+            })}
+            {filteredContacts.length === 0 ? <CompactEmpty text={props.contacts.length === 0 ? "没有可邀请的好友" : "没有找到这位好友"} /> : null}
+          </section>
+        </main>
+      </MobileScroll>
+    </div>
+  );
+}
+
+function GroupCreateResultScreen({
+  group,
+  failedIds,
+  contacts,
+  onBack,
+  onEnter,
+}: {
+  group: GroupRecord;
+  failedIds: string[];
+  contacts: Contact[];
+  onBack: () => void;
+  onEnter: () => void;
+}) {
+  const failed = contacts.filter((contact) => failedIds.includes(contact.id));
+  return (
+    <div className="subpage-screen">
+      <SubpageHeader title="创建结果" subtitle="群聊已经准备好" onBack={onBack} />
+      <MobileScroll className="subpage-scroll">
+        <main className="subpage-content group-result-content">
+          <section className="group-result-hero">
+            <span className="group-result-avatar">{group.avatar}</span>
+            <span className="result-check"><CheckIcon /></span>
+            <h1>{group.name}</h1>
+            <p>{group.members.length} 位成员已加入群聊</p>
+            <div className="result-member-avatars">
+              {group.members.slice(0, 6).map((member) => <i key={member.id}>{member.avatar}</i>)}
+            </div>
+          </section>
+          {failed.length > 0 ? (
+            <section className="partial-failure-card">
+              <strong>{failed.length} 位好友未能加入</strong>
+              <p>不影响其他成员使用群聊，稍后可以再次邀请。</p>
+              <div>{failed.map((contact) => <span key={contact.id}>{contact.name}</span>)}</div>
+            </section>
+          ) : (
+            <p className="group-all-success"><CheckIcon />所有选择的好友都已成功加入</p>
+          )}
+          <button type="button" className="group-primary-action" onClick={onEnter}>进入群聊</button>
+          <button type="button" className="group-secondary-action" onClick={onBack}>返回群聊列表</button>
+        </main>
+      </MobileScroll>
+    </div>
+  );
+}
+
+function GroupSettingsScreen({
+  group,
+  onBack,
+  onInvite,
+}: {
+  group: GroupRecord;
+  onBack: () => void;
+  onInvite: () => void;
+}) {
+  return (
+    <div className="subpage-screen">
+      <SubpageHeader title="群资料" subtitle={`${group.members.length} 位成员`} onBack={onBack} />
+      <MobileScroll className="subpage-scroll">
+        <main className="subpage-content group-settings-content">
+          <section className="group-profile-card">
+            <Avatar label={group.avatar} tone="green" />
+            <div><h1>{group.name}</h1><p>群号 {group.sessionId}</p></div>
+          </section>
+          <section className="group-members-card">
+            <div className="group-section-heading"><strong>群成员</strong><small>{group.members.length} 人</small></div>
+            <div className="group-member-grid">
+              {group.members.slice(0, 8).map((member) => (
+                <span key={member.id}>
+                  <Avatar label={member.avatar} tone={toneFromId(member.id)} />
+                  <small>{member.name}</small>
+                  {member.role === "owner" ? <b>群主</b> : null}
+                </span>
+              ))}
+              <button type="button" onClick={onInvite} aria-label="邀请好友">
+                <i><PlusIcon /></i><small>邀请</small>
+              </button>
+            </div>
+          </section>
+          <section className="group-info-list">
+            <div><span><strong>群公告</strong><small>欢迎来到群聊，友善交流，一起分享生活。</small></span><ChevronRightIcon /></div>
+            <div><span><strong>我在本群的昵称</strong><small>使用当前账号昵称</small></span><ChevronRightIcon /></div>
+            <div><span><strong>消息免打扰</strong><small>跟随会话设置</small></span><ChevronRightIcon /></div>
+          </section>
+          <button type="button" className="group-primary-action invite-more-button" onClick={onInvite}><PlusIcon />邀请更多好友</button>
+        </main>
+      </MobileScroll>
+    </div>
+  );
+}
+
 function ChatScreen({
   conversation,
   messages,
   draft,
   onDraftChange,
   onBack,
+  onOpenDetails,
   onSend,
 }: {
   conversation: Conversation;
@@ -1601,6 +2087,7 @@ function ChatScreen({
   draft: string;
   onDraftChange: (value: string) => void;
   onBack: () => void;
+  onOpenDetails: () => void;
   onSend: (content: string) => void;
 }) {
   const keyboard = useKeyboard();
@@ -1631,9 +2118,14 @@ function ChatScreen({
         <button type="button" className="chat-header-button" onClick={onBack} aria-label="返回消息列表"><ArrowLeftIcon /></button>
         <button type="button" className="chat-person" aria-label={`查看${conversation.name}的资料`}>
           <Avatar label={conversation.avatar} tone={conversation.avatarTone} online={conversation.presence === "在线"} />
-          <span><strong>{conversation.name}</strong><small>{conversation.group ? "5 位成员 · 消息已同步" : conversation.presence || "离线"}</small></span>
+          <span><strong>{conversation.name}</strong><small>{conversation.group ? `${conversation.membersCount || "多"} 位成员 · 消息已同步` : conversation.presence || "离线"}</small></span>
         </button>
-        <button type="button" className="chat-header-button" onClick={() => showComingSoon("会话设置")} aria-label="会话设置"><DotsHorizontalIcon /></button>
+        <button
+          type="button"
+          className="chat-header-button"
+          onClick={() => conversation.group ? onOpenDetails() : showComingSoon("会话设置")}
+          aria-label={conversation.group ? "群资料" : "会话设置"}
+        ><DotsHorizontalIcon /></button>
       </header>
 
       <MobileScroll className="chat-message-scroll">
@@ -1641,7 +2133,7 @@ function ChatScreen({
           {messages.length > 0 ? <button type="button" className="history-pill" onClick={() => showComingSoon("更早的历史消息")}>查看更早消息</button> : null}
           <div className="time-divider"><span>今天</span></div>
           {messages.length === 0 ? (
-            <div className="chat-empty"><ChatBubbleIcon /><strong>你们已经是好友了</strong><span>发一条消息开始聊天吧</span></div>
+            <div className="chat-empty"><ChatBubbleIcon /><strong>{conversation.group ? "群聊已经创建" : "你们已经是好友了"}</strong><span>发一条消息开始聊天吧</span></div>
           ) : messages.map((message) => (
             <div className={`message-line ${message.mine ? "mine" : "theirs"}`} key={message.id}>
               {!message.mine ? <Avatar label={conversation.avatar} tone={conversation.avatarTone} /> : null}
@@ -1712,6 +2204,7 @@ const CONVERSATION_STORAGE_PREFIX = "chatim.chat.conversations.v1";
 const MESSAGE_STORAGE_PREFIX = "chatim.chat.messages.v1";
 const CONTACT_STORAGE_PREFIX = "chatim.contacts.v1";
 const APPLICATION_STORAGE_PREFIX = "chatim.friend-applications.v1";
+const GROUP_STORAGE_PREFIX = "chatim.groups.v1";
 
 function loadDrafts(userId: AuthSession["userId"]): Record<string, string> {
   try {
@@ -1791,6 +2284,22 @@ function saveContactState(
   window.localStorage.setItem(`${APPLICATION_STORAGE_PREFIX}.${userId}`, JSON.stringify(applications));
 }
 
+function loadGroups(userId: AuthSession["userId"]): GroupRecord[] {
+  try {
+    const stored = JSON.parse(
+      window.localStorage.getItem(`${GROUP_STORAGE_PREFIX}.${userId}`) || "null",
+    ) as GroupRecord[] | null;
+    if (Array.isArray(stored)) return stored;
+  } catch {
+    // Fall through to the demo seed or an empty real cache.
+  }
+  return demoModeEnabled ? demoGroups : [];
+}
+
+function saveGroups(userId: AuthSession["userId"], groups: GroupRecord[]) {
+  window.localStorage.setItem(`${GROUP_STORAGE_PREFIX}.${userId}`, JSON.stringify(groups));
+}
+
 function makeClientMessageId() {
   return typeof crypto.randomUUID === "function"
     ? `client-${crypto.randomUUID()}`
@@ -1809,4 +2318,9 @@ function toErrorMessage(error: unknown) {
 function toContactErrorMessage(error: unknown) {
   if (error instanceof ContactApiError || error instanceof Error) return error.message;
   return "联系人操作没有完成，请稍后重试";
+}
+
+function toGroupErrorMessage(error: unknown) {
+  if (error instanceof GroupApiError || error instanceof Error) return error.message;
+  return "群聊操作没有完成，请稍后重试";
 }
