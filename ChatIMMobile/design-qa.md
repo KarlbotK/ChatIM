@@ -75,6 +75,16 @@
 - The final demo and real-mode sessions reported no console errors or warnings.
 - Evidence screenshots: `output/playwright/image-message-sent.png`, `output/playwright/image-preview-statusbar.png`, and `output/playwright/image-preview-pixel.png`.
 
+### Round 6: realtime messaging and recovery
+
+- Playwright verified the demo connection transition from connecting to synced, text-message echo reconciliation, persistent server message IDs, and duplicate-free restoration after reload.
+- A real-mode browser pass injected a controlled WebSocket transport and mocked the existing backend endpoints. The offline response created the missing conversation, displayed the recovered message, and advanced the local sync cursor only after success.
+- The outgoing payload was verified as `sessionId=501`, `receiverId=202`, `senderId=101`, `type=0`, `sessionType=0`, with a unique `clientMessageId` and the documented message body fields.
+- An abnormal close showed the reconnecting state, opened a replacement connection after the first one-second backoff, pulled offline data again, and kept the previously recovered `messageId=9001` to one copy.
+- The “查看更早消息” action now calls the history endpoint and reports empty, success, and failure states instead of showing a placeholder.
+- The backend's header-only WebSocket authentication remains incompatible with a standard browser constructor. The frontend exposes a native socket-factory seam and documents this boundary instead of placing access tokens in the URL.
+- Protected runtime integrity and the production build passed after the realtime integration.
+
 ## Comparison History
 
 1. Initial browser pass found a P2 layout issue: browser focus scrolling moved the framed device itself after authentication, which shifted the main page upward and left the simulated keyboard visible in the clipped frame.

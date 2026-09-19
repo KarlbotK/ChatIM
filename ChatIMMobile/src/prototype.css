@@ -893,6 +893,10 @@
   color: #85877d;
 }
 
+.sync-strip button.spinning svg {
+  animation: button-spin 760ms linear infinite;
+}
+
 .connection-dot,
 .environment-card > span {
   width: 7px;
@@ -907,6 +911,11 @@
 .environment-card > span.online {
   background: var(--chatim-green);
   box-shadow: 0 0 0 4px rgba(47, 131, 89, 0.1);
+}
+
+.connection-dot.offline {
+  background: #b86955;
+  box-shadow: 0 0 0 4px rgba(184, 105, 85, 0.1);
 }
 
 .conversation-list {
@@ -2014,6 +2023,11 @@
   background: rgba(255, 254, 250, 0.88);
   color: #808279;
   font-size: 9px;
+}
+
+.history-pill:disabled {
+  cursor: default;
+  opacity: 0.7;
 }
 
 .time-divider {

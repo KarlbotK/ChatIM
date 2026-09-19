@@ -82,6 +82,17 @@ import {
   prepareChatImage,
   uploadChatImage,
 } from "./media";
+import {
+  ChatRealtimeClient,
+  RealtimeApiError,
+  fetchHistoryMessages,
+  fetchOfflineMessages,
+  resolveOfflineStart,
+  saveOfflineCursor,
+  type OutgoingRealtimeMessage,
+  type RealtimeConnectionState,
+  type RealtimeMessage,
+} from "./realtime";
 
 type Phase = "booting" | "signed-out" | "signed-in";
 type LoginMode = "password" | "code";
@@ -702,6 +713,18 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
   const [groups, setGroups] = useState<GroupRecord[]>(() => loadGroups(session.userId));
   const [contactSurface, setContactSurface] = useState<ContactSurface>(null);
   const [notice, setNotice] = useState("");
+  const [connectionState, setConnectionState] = useState<RealtimeConnectionState>("connecting");
+  const [syncState, setSyncState] = useState<"idle" | "syncing" | "synced" | "failed">("idle");
+  const [lastSyncTime, setLastSyncTime] = useState("");
+  const realtimeRef = useRef<ChatRealtimeClient | null>(null);
+  const syncOfflineRef = useRef<(() => Promise<void>) | null>(null);
+  const activeConversationIdRef = useRef<string | null>(null);
+  const offlineStartRef = useRef(resolveOfflineStart(session, Date.now()));
+  const seenServerKeysRef = useRef<Set<string> | null>(null);
+  const applyServerMessagesRef = useRef<(incoming: RealtimeMessage[], history?: boolean) => number>(() => 0);
+
+  if (!seenServerKeysRef.current) seenServerKeysRef.current = collectServerMessageKeys(messages);
+  activeConversationIdRef.current = activeConversationId;
 
   const tabs = useMemo(
     () => [
@@ -723,6 +746,107 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
     `${item.name} ${item.note}`.toLocaleLowerCase().includes(normalizedQuery),
   );
   const applicationUnread = applications.filter((item) => item.isReceiver === 1 && item.status === 0).length;
+  const syncPresentation = describeSyncState(connectionState, syncState, lastSyncTime);
+
+  applyServerMessagesRef.current = (incoming, history = false) => {
+    const seen = seenServerKeysRef.current!;
+    const accepted = incoming
+      .filter(isRealtimeMessage)
+      .sort((a, b) => (a.createdTime || 0) - (b.createdTime || 0))
+      .filter((message) => {
+        const messageKey = message.messageId == null ? "" : `message:${message.messageId}`;
+        const clientKey = message.clientMessageId ? `client:${message.clientMessageId}` : "";
+        if ((messageKey && seen.has(messageKey)) || (!messageKey && clientKey && seen.has(clientKey))) return false;
+        if (messageKey) seen.add(messageKey);
+        if (clientKey) seen.add(clientKey);
+        return true;
+      });
+
+    if (accepted.length === 0) return 0;
+
+    setMessages((current) => {
+      const next = { ...current };
+      accepted.forEach((message) => {
+        const sessionId = String(message.sessionId);
+        const existing = [...(next[sessionId] ?? [])];
+        const converted = toChatMessage(message, session.userId);
+        const matchIndex = message.clientMessageId
+          ? existing.findIndex((item) => item.clientMessageId === message.clientMessageId || item.id === message.clientMessageId)
+          : -1;
+        if (matchIndex >= 0) {
+          const local = existing[matchIndex];
+          existing[matchIndex] = {
+            ...local,
+            ...converted,
+            imageName: local.imageName || converted.imageName,
+            imageWidth: local.imageWidth,
+            imageHeight: local.imageHeight,
+            imageSize: local.imageSize,
+            uploadProgress: undefined,
+            status: "sent",
+          };
+        } else {
+          existing.push(converted);
+        }
+        next[sessionId] = existing.sort(compareChatMessages);
+      });
+      return next;
+    });
+
+    if (!history) {
+      setConversations((current) => {
+        let next = [...current];
+        const grouped = new Map<string, RealtimeMessage[]>();
+        accepted.forEach((message) => {
+          const key = String(message.sessionId);
+          grouped.set(key, [...(grouped.get(key) ?? []), message]);
+        });
+        grouped.forEach((batch, sessionId) => {
+          const latest = batch[batch.length - 1];
+          const incomingCount = batch.filter((message) => String(message.senderId) !== String(session.userId)).length;
+          const currentIndex = next.findIndex((item) => item.id === sessionId);
+          const preview = realtimePreview(latest);
+          const active = activeConversationIdRef.current === sessionId;
+          if (currentIndex >= 0) {
+            const existing = next[currentIndex];
+            const updated: Conversation = {
+              ...existing,
+              preview,
+              time: formatConversationTime(latest.createdTime),
+              unread: active ? 0 : existing.unread + incomingCount,
+              failed: false,
+            };
+            next.splice(currentIndex, 1);
+            next.unshift(updated);
+          } else {
+            const contact = contacts.find((item) => item.conversationId === sessionId);
+            const group = groups.find((item) => item.sessionId === sessionId);
+            const name = group?.name
+              || contact?.name
+              || (latest.sessionType === 1 ? "新群聊" : latest.nickname || "新消息");
+            next.unshift({
+              id: sessionId,
+              name,
+              avatar: group?.avatar || contact?.avatar || name.slice(0, 1),
+              avatarTone: contact?.avatarTone || toneFromId(sessionId),
+              preview,
+              time: formatConversationTime(latest.createdTime),
+              unread: active ? 0 : incomingCount,
+              presence: contact?.presence,
+              peerId: contact?.id || (latest.sessionType === 0 && String(latest.senderId) !== String(session.userId)
+                ? String(latest.senderId)
+                : undefined),
+              group: latest.sessionType === 1,
+              membersCount: group?.members.length,
+            });
+          }
+        });
+        return next;
+      });
+    }
+
+    return accepted.length;
+  };
 
   useEffect(() => {
     saveDrafts(session.userId, drafts);
@@ -737,8 +861,91 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
   }, [applications, contacts, session.userId]);
 
   useEffect(() => {
+    setConversations((items) => {
+      let changed = false;
+      const next = items.map((conversation) => {
+        if (conversation.group || conversation.peerId) return conversation;
+        const peerId = contacts.find((contact) => contact.conversationId === conversation.id)?.id;
+        if (!peerId) return conversation;
+        changed = true;
+        return { ...conversation, peerId };
+      });
+      return changed ? next : items;
+    });
+  }, [contacts]);
+
+  useEffect(() => {
     saveGroups(session.userId, groups);
   }, [groups, session.userId]);
+
+  useEffect(() => {
+    let active = true;
+    let syncRun = 0;
+
+    const syncOffline = async () => {
+      const run = ++syncRun;
+      const syncStartedAt = Date.now();
+      setSyncState("syncing");
+      try {
+        const batches = await fetchOfflineMessages(session, offlineStartRef.current);
+        if (!active || run !== syncRun) return;
+        applyServerMessagesRef.current(Object.values(batches).flat());
+        offlineStartRef.current = syncStartedAt;
+        saveOfflineCursor(session.userId, syncStartedAt);
+        setLastSyncTime(formatClock(new Date()));
+        setSyncState("synced");
+      } catch {
+        if (active && run === syncRun) setSyncState("failed");
+      }
+    };
+
+    syncOfflineRef.current = syncOffline;
+    const client = new ChatRealtimeClient({
+      session,
+      onState: (state) => {
+        if (active) setConnectionState(state);
+      },
+      onMessage: (message) => {
+        if (active) applyServerMessagesRef.current([message]);
+      },
+      onConnected: () => {
+        if (!active) return;
+        void syncOffline();
+        if (!demoModeEnabled) {
+          Promise.all([fetchFriends(session), fetchFriendApplications(session), fetchFriendApplicationCount(session)])
+            .then(([friendItems, applicationItems]) => {
+              if (!active) return;
+              setContacts(friendItems.map(toContact));
+              setApplications(applicationItems);
+            })
+            .catch(() => {
+              // Message recovery remains usable while the contact service is unavailable.
+            });
+        }
+      },
+    });
+    realtimeRef.current = client;
+    client.connect();
+
+    const reconnectWhenVisible = () => {
+      if (document.visibilityState === "visible" && !client.isConnected()) client.reconnectNow();
+    };
+    const reconnectWhenOnline = () => {
+      if (!client.isConnected()) client.reconnectNow();
+    };
+    document.addEventListener("visibilitychange", reconnectWhenVisible);
+    window.addEventListener("online", reconnectWhenOnline);
+
+    return () => {
+      active = false;
+      syncRun += 1;
+      document.removeEventListener("visibilitychange", reconnectWhenVisible);
+      window.removeEventListener("online", reconnectWhenOnline);
+      client.disconnect();
+      if (realtimeRef.current === client) realtimeRef.current = null;
+      if (syncOfflineRef.current === syncOffline) syncOfflineRef.current = null;
+    };
+  }, [session.accessToken, session.nettyUri, session.refreshToken, session.userId]);
 
   useEffect(() => {
     if (demoModeEnabled) return;
@@ -765,6 +972,44 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
     setNotice("");
   };
 
+  const sendRealtimeMessage = (
+    conversation: Conversation,
+    type: 0 | 1,
+    content: string,
+    clientMessageId: string,
+  ) => {
+    const peerId = conversation.peerId
+      || contacts.find((contact) => contact.conversationId === conversation.id)?.id;
+    if (!conversation.group && !peerId && !demoModeEnabled) return false;
+
+    const payload: OutgoingRealtimeMessage = {
+      sessionId: conversation.id,
+      receiverId: conversation.group ? null : peerId,
+      senderId: session.userId,
+      type,
+      sessionType: conversation.group ? 1 : 0,
+      clientMessageId,
+      body: {
+        content,
+        replyId: null,
+        redPacketId: null,
+        redPacketWrapperText: null,
+      },
+    };
+    const accepted = realtimeRef.current?.send(payload) ?? false;
+    window.setTimeout(() => {
+      setMessages((items) => ({
+        ...items,
+        [conversation.id]: (items[conversation.id] ?? []).map((item) =>
+          item.clientMessageId === clientMessageId && item.status === "sending"
+            ? { ...item, status: "unknown" }
+            : item,
+        ),
+      }));
+    }, accepted ? 8_000 : 260);
+    return accepted;
+  };
+
   const openConversation = (conversationId: string) => {
     keyboard.hide();
     setConversations((items) =>
@@ -777,6 +1022,9 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
     setContactSurface(null);
     const existing = conversations.find((item) => item.id === contact.conversationId);
     if (existing) {
+      if (!existing.peerId) {
+        setConversations((items) => items.map((item) => item.id === existing.id ? { ...item, peerId: contact.id } : item));
+      }
       openConversation(existing.id);
       return;
     }
@@ -790,6 +1038,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
       time: "刚刚",
       unread: 0,
       presence: contact.presence,
+      peerId: contact.id,
     };
     setConversations((items) => [nextConversation, ...items]);
     setMessages((items) => ({ ...items, [contact.conversationId]: [] }));
@@ -1005,6 +1254,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
         }}
         messages={messages[activeConversation.id] ?? []}
         draft={drafts[activeConversation.id] ?? activeConversation.draft ?? ""}
+        connectionLabel={syncPresentation.chatLabel}
         onDraftChange={(value) => setDrafts((items) => ({ ...items, [activeConversation.id]: value }))}
         onBack={() => {
           keyboard.hide();
@@ -1015,9 +1265,11 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
           const sentAt = new Date();
           const outgoing: ChatMessage = {
             id: clientMessageId,
+            clientMessageId,
             mine: true,
             content,
             time: formatClock(sentAt),
+            createdTime: sentAt.getTime(),
             status: "sending",
           };
 
@@ -1034,16 +1286,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
               .sort((a, b) => Number(b.id === activeConversation.id) - Number(a.id === activeConversation.id)),
           ]);
 
-          window.setTimeout(() => {
-            setMessages((items) => ({
-              ...items,
-              [activeConversation.id]: (items[activeConversation.id] ?? []).map((item) =>
-                item.id === clientMessageId
-                  ? { ...item, status: demoModeEnabled ? "sent" : "unknown" }
-                  : item,
-              ),
-            }));
-          }, 760);
+          sendRealtimeMessage(activeConversation, 0, content, clientMessageId);
         }}
         onSendImage={async (file) => {
           const clientMessageId = makeClientMessageId();
@@ -1053,6 +1296,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
             queued = true;
             const outgoing: ChatMessage = {
               id: clientMessageId,
+              clientMessageId,
               mine: true,
               kind: "image",
               content: prepared.previewUrl,
@@ -1062,6 +1306,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
               imageSize: prepared.size,
               uploadProgress: 0,
               time: formatClock(new Date()),
+              createdTime: Date.now(),
               status: "uploading",
             };
             setMessages((items) => ({
@@ -1088,10 +1333,11 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
               ...items,
               [activeConversation.id]: (items[activeConversation.id] ?? []).map((item) =>
                 item.id === clientMessageId
-                  ? { ...item, content: uploaded.downloadUrl, uploadProgress: 100, status: demoModeEnabled ? "sent" : "unknown" }
+                  ? { ...item, content: uploaded.downloadUrl, uploadProgress: 100, status: "sending" }
                   : item,
               ),
             }));
+            sendRealtimeMessage(activeConversation, 1, uploaded.downloadUrl, clientMessageId);
           } catch (error) {
             if (queued) {
               setMessages((items) => ({
@@ -1106,6 +1352,15 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
             }
             throw error;
           }
+        }}
+        onLoadHistory={async () => {
+          const currentMessages = messages[activeConversation.id] ?? [];
+          const timestamps = currentMessages
+            .map((message) => message.createdTime)
+            .filter((value): value is number => typeof value === "number" && value > 0);
+          const beforeTime = timestamps.length > 0 ? Math.min(...timestamps) : Date.now();
+          const history = await fetchHistoryMessages(session, activeConversation.id, beforeTime);
+          return applyServerMessagesRef.current(history, true);
         }}
       />
     );
@@ -1148,9 +1403,17 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
             <>
               <SearchField value={query} onChange={setQuery} placeholder="搜索会话或消息" />
               <section className="sync-strip" aria-label="同步状态">
-                <span className={`connection-dot ${demoModeEnabled ? "online" : "waiting"}`} />
-                <p>{demoModeEnabled ? "已连接 · 消息刚刚同步" : "等待会话摘要接口 · 登录状态正常"}</p>
-                <button type="button" aria-label="重新同步"><ReloadIcon /></button>
+                <span className={`connection-dot ${syncPresentation.tone}`} />
+                <p>{syncPresentation.label}</p>
+                <button
+                  type="button"
+                  className={syncState === "syncing" ? "spinning" : ""}
+                  aria-label={connectionState === "connected" ? "重新同步" : "重新连接"}
+                  onClick={() => {
+                    if (connectionState === "connected") void syncOfflineRef.current?.();
+                    else realtimeRef.current?.reconnectNow();
+                  }}
+                ><ReloadIcon /></button>
               </section>
               {conversations.length > 0 ? (
                 <section className="conversation-list" aria-label="会话列表">
@@ -1301,6 +1564,7 @@ type Conversation = {
   draft?: string;
   group?: boolean;
   membersCount?: number;
+  peerId?: string;
 };
 
 type GroupMember = {
@@ -1321,9 +1585,12 @@ type GroupRecord = {
 
 type ChatMessage = {
   id: string;
+  messageId?: string;
+  clientMessageId?: string;
   mine: boolean;
   content: string;
   time: string;
+  createdTime?: number;
   status?: MessageStatus;
   kind?: "text" | "image";
   imageName?: string;
@@ -2168,6 +2435,8 @@ function ChatScreen({
   onOpenDetails,
   onSend,
   onSendImage,
+  onLoadHistory,
+  connectionLabel,
 }: {
   conversation: Conversation;
   messages: ChatMessage[];
@@ -2177,6 +2446,8 @@ function ChatScreen({
   onOpenDetails: () => void;
   onSend: (content: string) => void;
   onSendImage: (file: File) => Promise<void>;
+  onLoadHistory: () => Promise<number>;
+  connectionLabel: string;
 }) {
   const keyboard = useKeyboard();
   const { bottomInset, isKeyboardVisible } = useKeyboardInsets();
@@ -2185,6 +2456,7 @@ function ChatScreen({
   const [toast, setToast] = useState("");
   const [imageBusy, setImageBusy] = useState(false);
   const [previewImage, setPreviewImage] = useState<ChatMessage | null>(null);
+  const [historyBusy, setHistoryBusy] = useState(false);
 
   useEffect(() => {
     if (isKeyboardVisible) setShowTools(false);
@@ -2225,13 +2497,27 @@ function ChatScreen({
     }
   };
 
+  const loadHistory = async () => {
+    if (historyBusy) return;
+    setHistoryBusy(true);
+    try {
+      const count = await onLoadHistory();
+      setToast(count > 0 ? `已补充 ${count} 条更早消息` : "没有更早的消息了");
+    } catch (error) {
+      setToast(toRealtimeErrorMessage(error));
+    } finally {
+      setHistoryBusy(false);
+      window.setTimeout(() => setToast(""), 2_200);
+    }
+  };
+
   return (
     <div className="chat-screen" style={{ "--chat-bottom-inset": `${bottomInset}px` } as CSSProperties}>
       <header className="chat-header">
         <button type="button" className="chat-header-button" onClick={onBack} aria-label="返回消息列表"><ArrowLeftIcon /></button>
         <button type="button" className="chat-person" aria-label={`查看${conversation.name}的资料`}>
           <Avatar label={conversation.avatar} tone={conversation.avatarTone} online={conversation.presence === "在线"} />
-          <span><strong>{conversation.name}</strong><small>{conversation.group ? `${conversation.membersCount || "多"} 位成员 · 消息已同步` : conversation.presence || "离线"}</small></span>
+          <span><strong>{conversation.name}</strong><small>{conversation.group ? `${conversation.membersCount || "多"} 位成员 · ${connectionLabel}` : conversation.presence || connectionLabel}</small></span>
         </button>
         <button
           type="button"
@@ -2243,7 +2529,7 @@ function ChatScreen({
 
       <MobileScroll className="chat-message-scroll">
         <main className="chat-timeline">
-          {messages.length > 0 ? <button type="button" className="history-pill" onClick={() => showComingSoon("更早的历史消息")}>查看更早消息</button> : null}
+          {messages.length > 0 ? <button type="button" className="history-pill" onClick={() => void loadHistory()} disabled={historyBusy}>{historyBusy ? "正在加载…" : "查看更早消息"}</button> : null}
           <div className="time-divider"><span>今天</span></div>
           {messages.length === 0 ? (
             <div className="chat-empty"><ChatBubbleIcon /><strong>{conversation.group ? "群聊已经创建" : "你们已经是好友了"}</strong><span>发一条消息开始聊天吧</span></div>
@@ -2471,6 +2757,98 @@ function formatImageMeta(message: ChatMessage) {
   return `${dimensions} · ${size}`;
 }
 
+function collectServerMessageKeys(messages: Record<string, ChatMessage[]>) {
+  const keys = new Set<string>();
+  Object.values(messages).flat().forEach((message) => {
+    if (message.messageId) keys.add(`message:${message.messageId}`);
+    if (message.messageId && message.clientMessageId) keys.add(`client:${message.clientMessageId}`);
+  });
+  return keys;
+}
+
+function isRealtimeMessage(message: RealtimeMessage) {
+  return message
+    && message.sessionId != null
+    && message.senderId != null
+    && typeof message.type === "number"
+    && typeof message.body?.content === "string";
+}
+
+function toChatMessage(message: RealtimeMessage, userId: AuthSession["userId"]): ChatMessage {
+  const createdTime = message.createdTime || Date.now();
+  const clientMessageId = message.clientMessageId || undefined;
+  return {
+    id: clientMessageId || (message.messageId == null ? `server-${createdTime}` : `server-${message.messageId}`),
+    messageId: message.messageId == null ? undefined : String(message.messageId),
+    clientMessageId,
+    mine: String(message.senderId) === String(userId),
+    content: message.body.content,
+    time: formatClock(new Date(createdTime)),
+    createdTime,
+    status: String(message.senderId) === String(userId) ? "sent" : undefined,
+    kind: message.type === 1 ? "image" : "text",
+    imageName: message.type === 1 ? imageNameFromUrl(message.body.content) : undefined,
+  };
+}
+
+function compareChatMessages(left: ChatMessage, right: ChatMessage) {
+  return (left.createdTime || 0) - (right.createdTime || 0);
+}
+
+function realtimePreview(message: RealtimeMessage) {
+  if (message.type === 1) return "[图片]";
+  if (message.type === 2) return "[表情]";
+  if (message.type === 3) return message.body.redPacketWrapperText || "[红包]";
+  return message.body.content;
+}
+
+function imageNameFromUrl(value: string) {
+  try {
+    const pathname = new URL(value, window.location.href).pathname;
+    return decodeURIComponent(pathname.split("/").pop() || "聊天图片");
+  } catch {
+    return "聊天图片";
+  }
+}
+
+function formatConversationTime(value?: number) {
+  if (!value) return "刚刚";
+  const date = new Date(value);
+  const now = new Date();
+  if (now.toDateString() === date.toDateString()) return formatClock(date);
+  return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(date);
+}
+
+function describeSyncState(
+  connection: RealtimeConnectionState,
+  sync: "idle" | "syncing" | "synced" | "failed",
+  lastSyncTime: string,
+) {
+  if (connection === "auth-failed") {
+    return { tone: "offline", label: "消息连接认证失败，请重新登录", chatLabel: "连接失效" };
+  }
+  if (connection === "reconnecting") {
+    return { tone: "waiting", label: "连接中断，正在自动重连…", chatLabel: "重连中" };
+  }
+  if (connection === "connecting") {
+    return { tone: "waiting", label: "正在连接消息服务…", chatLabel: "连接中" };
+  }
+  if (connection === "disconnected") {
+    return { tone: "offline", label: "消息服务未连接，点击重试", chatLabel: "未连接" };
+  }
+  if (sync === "syncing") {
+    return { tone: "online", label: "已连接，正在补齐离线消息…", chatLabel: "同步中" };
+  }
+  if (sync === "failed") {
+    return { tone: "waiting", label: "已连接，离线消息同步失败，可点击重试", chatLabel: "同步待重试" };
+  }
+  return {
+    tone: "online",
+    label: lastSyncTime ? `已连接 · ${lastSyncTime} 已同步` : "已连接 · 消息已同步",
+    chatLabel: "已同步",
+  };
+}
+
 function toErrorMessage(error: unknown) {
   if (error instanceof AuthApiError || error instanceof Error) return error.message;
   return "操作没有完成，请稍后重试";
@@ -2489,4 +2867,9 @@ function toGroupErrorMessage(error: unknown) {
 function toMediaErrorMessage(error: unknown) {
   if (error instanceof MediaApiError || error instanceof Error) return error.message;
   return "图片没有发送成功，请稍后重试";
+}
+
+function toRealtimeErrorMessage(error: unknown) {
+  if (error instanceof RealtimeApiError || error instanceof Error) return error.message;
+  return "消息暂时无法同步，请稍后重试";
 }

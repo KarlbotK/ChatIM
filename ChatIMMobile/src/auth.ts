@@ -8,7 +8,7 @@ export type AuthSession = {
   accessToken: string;
   refreshToken: string;
   nettyUri?: string | null;
-  offlineTime?: string | null;
+  offlineTime?: string | number | null;
 };
 
 type ApiResponse<T> = {
