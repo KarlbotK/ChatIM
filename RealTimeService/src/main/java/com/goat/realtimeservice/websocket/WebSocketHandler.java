@@ -26,6 +26,8 @@ public class WebSocketHandler extends SimpleChannelInboundHandler<TextWebSocketF
 
     private final KafkaTemplate<String, String> kafkaTemplate;
 
+    private final WebSocketRouteService webSocketRouteService;
+
     @Override
     protected void channelRead0(ChannelHandlerContext channelHandlerContext, TextWebSocketFrame textWebSocketFrame) {
         Channel channel = channelHandlerContext.channel();
@@ -36,6 +38,10 @@ public class WebSocketHandler extends SimpleChannelInboundHandler<TextWebSocketF
                 // 心跳响应
                 if (channel.isActive()) {
                     log.debug("Received heartbeat ping from {}", channel.id());
+                    String userId = ChannelManager.getUserIdByChannel(channel);
+                    if (userId != null) {
+                        webSocketRouteService.refresh(userId, channel);
+                    }
                     channel.writeAndFlush(new TextWebSocketFrame(WebSocketConstant.HEARTBEAT_PONG));
                 }
             } else {
@@ -161,6 +167,8 @@ public class WebSocketHandler extends SimpleChannelInboundHandler<TextWebSocketF
         if (userId == null) {
             return;
         }
+
+        webSocketRouteService.remove(userId, channel);
 
         try {
             boolean removed = ChannelManager.removeUserChannel(userId, channel);

@@ -6,10 +6,7 @@ import com.goat.common.constant.SessionTypeConstant;
 import com.goat.common.model.dto.MessageRequest;
 import com.goat.common.model.vo.MessageResponse;
 import com.goat.realtimeservice.client.UserServiceClient;
-import com.goat.realtimeservice.websocket.ChannelManager;
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
+import com.goat.realtimeservice.websocket.WebSocketPushService;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -24,6 +21,9 @@ public class ConsumerMessageService {
 
     @Resource
     private UserServiceClient userServiceClient;
+
+    @Resource
+    private WebSocketPushService webSocketPushService;
 
     @KafkaListener(topics = "message-topic", groupId = "infinite-chat-push-group-0")
     public void consume(String message) {
@@ -64,18 +64,12 @@ public class ConsumerMessageService {
     }
 
     public void pushMessageToUser(MessageResponse messageResponse, Long receiverId) {
-        Channel channel = ChannelManager.getChannelByUserId(receiverId.toString());
-        if (channel != null) {
-            TextWebSocketFrame frame = new TextWebSocketFrame(JSONUtil.toJsonStr(messageResponse));
-            channel.writeAndFlush(frame).addListener((ChannelFutureListener) future -> {
-                if (future.isSuccess()) {
-                    log.info("消息发送成功: {}", messageResponse);
-                } else {
-                    log.info("消息发送失败: {}", future.cause() != null ? future.cause().getMessage() : "未知错误");
-                }
-            });
-        } else {
-            log.info("channel 不存在");
+        boolean routed = webSocketPushService.pushToUser(
+                receiverId,
+                JSONUtil.toJsonStr(messageResponse)
+        );
+        if (!routed) {
+            log.info("用户不在线或没有 WebSocket 路由，userId={}", receiverId);
         }
     }
 

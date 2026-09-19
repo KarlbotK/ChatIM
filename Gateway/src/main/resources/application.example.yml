@@ -46,10 +46,22 @@ spring:
               uri: lb://UserService
               predicates:
                 - Path=/api/user/**
+            - id: ContactService
+              uri: lb://UserService
+              predicates:
+                - Path=/api/contact/**
+            - id: GroupService
+              uri: lb://UserService
+              predicates:
+                - Path=/api/group/**
             - id: OfflineDataService
               uri: lb://OfflineDataService
               predicates:
                 - Path=/api/message/**
+            - id: RedpacketService
+              uri: lb://RedPacketService
+              predicates:
+                - Path=/api/chat/redPacket/**
 
 server:
   port: ${SERVER_PORT:10010}

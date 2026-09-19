@@ -16,6 +16,8 @@ public class WebSocketAuthHeader extends ChannelInboundHandlerAdapter {
 
     private final StringRedisTemplate stringRedisTemplate;
 
+    private final WebSocketRouteService webSocketRouteService;
+
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg)  {
         if (msg instanceof FullHttpRequest request){
@@ -46,6 +48,7 @@ public class WebSocketAuthHeader extends ChannelInboundHandlerAdapter {
                 // 3. 绑定用户与 channel
                 ChannelManager.addUserChannel(userId, ctx.channel());
                 ChannelManager.addChannelUser(userId, ctx.channel());
+                webSocketRouteService.bind(userId, ctx.channel());
                 ctx.fireChannelRead(msg);
             } catch (Exception e) {
                 // 记录日志

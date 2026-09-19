@@ -2,7 +2,7 @@
 
 > 这份文档把前面讨论过的概念，和当前项目中的代码、端口、topic、Redis key 以及业务链路对应起来。
 >
-> 当前代码基线：2026-08-18。文档中的配置和类名以仓库现状为准；本地密码、JWT 密钥、邮箱密码等敏感配置不要写进 Git，应使用环境变量。
+> 当前代码基线：2026-08-20。文档中的配置和类名以仓库现状为准；本地密码、JWT 密钥、邮箱密码等敏感配置不要写进 Git，应使用环境变量。
 
 ## 1. 先记住项目全貌
 
@@ -12,7 +12,7 @@ InfiniteChat 是一个 Spring Boot 多模块项目，当前根 POM 中有 6 个�
 |---|---|---|
 | `Common` | 公共实体、DTO、VO、常量、JWT、统一返回、异常、AOP | MyBatis-Plus、Redis、JWT、Spring AOP |
 | `Gateway` | HTTP API 统一入口、路由、CORS、服务发现负载均衡 | Spring Cloud Gateway、Nacos |
-| `UserService` | 用户、登录、好友、好友申请、会话、群聊、内部校验、上传地址 | MySQL、MyBatis-Plus、Redis、Kafka、Nacos、MinIO、ShedLock |
+| `UserService` | 用户、登录、好友、好友申请、会话、群聊创建与邀请、内部校验、上传地址 | MySQL、MyBatis-Plus、Redis、Kafka、Nacos、MinIO、ShedLock |
 | `RealTimeService` | Netty WebSocket 连接、鉴权、收发消息、在线系统通知 | Netty、Redis、Kafka、OpenFeign、Nacos |
 | `OfflineDataService` | 消息落 MySQL、离线/历史消息查询、Canal 同步热消息到 Redis | MySQL、Redis、Kafka、Canal、OpenFeign、Nacos |
 | `RedPacketService` | 红包创建、余额扣减、抢红包、过期退款、红包消息 | MySQL、Redis、Kafka、OpenFeign、Resilience4j/Spring Cloud CircuitBreaker、ShedLock |
@@ -67,6 +67,8 @@ WebSocket 是一种通信协议，不是一个独立的服务，也不是 Netty 
                                            v
 用户 B <-> B 的 WebSocket Channel <-> RealTimeService/Netty
 ```
+
+当前 HTTP 和 WebSocket 使用的是同一个 access token，但 Header 名称暂时不同：普通 HTTP 使用 `Access-Token`，Netty 握手使用 `Authorization`。这不是两种 token，前端只是需要按连接类型设置不同 Header；当前 WebSocket 代码也不支持直接传 `Bearer ` 前缀。
 
 `ChannelPipeline` 是这条 Channel 上的处理链。当前大致是：
 
@@ -159,7 +161,7 @@ NIO 和“串行无锁”不矛盾：NIO 解决线程如何高效等待许多连
   - `access:token:{userId}`
   - `refresh:token:{userId}`
 - HTTP 请求可以通过 Gateway 的鉴权过滤器校验。
-- WebSocket 不一定经过 Gateway，因此 `WebSocketAuthHeader` 自己读取 Authorization Header，解析 JWT，再和 Redis 中保存的 access token 比较。
+- HTTP 鉴权过滤器读取 `Access-Token` Header；WebSocket 不一定经过 Gateway，因此 `WebSocketAuthHeader` 自己读取 `Authorization` Header，解析 JWT，再和 Redis 中保存的 access token 比较。
 
 JWT 负责“内容可验证和过期时间”，Redis 中的 token 记录负责“服务端可撤销和只允许当前 token”。只解析 JWT 不查 Redis，用户退出登录后旧 JWT 可能仍然在有效期内；两者一起用可以主动失效。
 
@@ -172,9 +174,14 @@ OAuth2 是授权框架，OIDC 是在 OAuth2 之上增加身份认证和 ID Token
 Gateway 是 HTTP 请求的统一入口。当前路由类似：
 
 ```text
-/api/user/**    -> lb://UserService
-/api/message/** -> lb://OfflineDataService
+/api/user/**          -> lb://UserService
+/api/contact/**       -> lb://UserService
+/api/group/**         -> lb://UserService
+/api/message/**       -> lb://OfflineDataService
+/api/chat/redPacket/** -> lb://RedPacketService
 ```
+
+其中 `/api/contact/**` 和 `/api/group/**` 已补充到 Gateway 配置，红包路径统一为 `/api/chat/redPacket/**`，服务发现名称为 `RedPacketService`。前端应统一访问 Gateway，不要直接访问各个业务服务端口。
 
 `lb://UserService` 的意思不是访问固定的 `localhost:8104`，而是根据服务名从注册中心找 UserService 实例，再由 Spring Cloud LoadBalancer 选一个实例。
 
@@ -219,9 +226,20 @@ userId   -> 哈希环上的点
 3. Gateway 通过 `lb://ServiceName` 进行 HTTP 分流。
 4. Kafka 消费者使用相同 groupId，让一个 partition 同时只由一个消费者实例处理。
 5. 共享 MySQL、Redis、Kafka、Nacos，而不是每个实例各自使用本地中间件。
-6. WebSocket 需要额外设计入口：使用支持 WebSocket 的网关、反向代理和粘性路由，或维护用户到 Netty 实例的可共享路由表，并让跨实例推送能够找到目标连接。
+6. WebSocket 需要额外设计入口：使用支持 WebSocket 的网关、反向代理和粘性路由，或维护用户到 Netty 实例的可共享路由表，并让跨实例推送能够找到目标连接。Kafka 的消费实例不会自动跟随 WebSocket 连接位置。
 
 当前 `ChannelManager` 是静态 `ConcurrentHashMap`，只在当前 RealTimeService JVM 内有效，所以“HTTP 服务可以直接横向扩展”和“WebSocket 连接已经完成多实例扩展”不是一回事。
+
+WebSocket 多实例有两种主要改法：
+
+```text
+方案 A：message-topic -> 任意 RealTimeService -> Redis 查路由 -> 本机推送或转发给目标实例
+方案 B：message-topic -> PushRouter -> Redis 查路由 -> 目标 RealTimeService -> 本机推送
+```
+
+方案 A 改动较小，本机目标可以直接推送；方案 B 把路由职责集中到 PushRouter，但所有实时消息都会多经过一个组件。Redis 不会自动完成“重新分配”，必须由 RealTimeService 或 PushRouter 查询 `userId -> instanceId` 后发布到实例专属通道。当前项目只需要先记住：`message-topic` 负责消息流转，Redis 负责在线实例路由，ChannelManager 负责当前 JVM 的真实连接。
+
+当前项目已按方案 A 落地第一版：RealTimeService 连接成功后把 `userId -> instanceId|channelId` 写入 Redis，Kafka 消费者查询路由，本机直接推送，跨实例通过 Redis Pub/Sub 转发。后续再根据推送规模决定是否拆出 PushRouter。Redis Pub/Sub 只负责实时转发，消息可靠性仍由 `store-topic`、MySQL 和离线补拉兜底。
 
 ## 6. Kafka：topic、partition、groupId 和当前 topic
 
@@ -320,6 +338,13 @@ ShedLock 和 ZSet 不是同一个东西：
 - `user_session`：谁加入了哪个会话，保存 `user_id`、`session_id`、角色、成员状态。
 
 单聊一般有一个 `session`，再通过两条 `user_session` 记录把两个用户挂进去。群聊有一个 `session`，再通过多条 `user_session` 记录保存成员和角色。所以单独查 `session` 不能知道成员关系，单独查 `user_session` 又不知道会话的名称和类型。
+
+当前群聊已经具备两条主要业务入口：
+
+- `POST /api/group`：创建群聊，创建 `session` 和群主、成员的 `user_session` 关系，并发送新群聊系统通知。
+- `POST /api/group/invite`：群主或管理员邀请好友加入群聊，校验好友关系和重复成员后插入 `user_session`，再发送系统通知。
+
+群成员数量通过 `user_session` 表中 `status = 0` 的记录统计。`SessionServiceImpl` 继承的是 `ServiceImpl<SessionMapper, Session>`，不能用它的 `this.count()` 统计 `UserSession`；当前实际统计逻辑在 `UserSessionServiceImpl`，使用 `userSessionMapper` 对应 `user_session` 表。
 
 ### 8.2 好友关系为什么通常是双向记录
 
@@ -552,7 +577,7 @@ MinIO 是对象存储，类似私有部署版的 S3，不把图片二进制塞�
 
 头像和聊天图片的“文件上传”流程可以相同，区别在于业务对象和最后保存的位置不同：头像通常保存到 `user.avatar` 或 `session.avatar`，聊天图片通常作为消息内容/消息体中的对象地址保存到 `message`。
 
-本地地址如 `http://localhost:9000/infinitechat/dp.jpg` 只适合本机开发。上线时应换成 MinIO 的域名、反向代理域名或 CDN 地址；代码中 `minio.url` 是生成下载地址时使用的基础地址。`dp.jpg -> group/default.jpg` 是为群聊默认头像准备的对象，不代表所有用户图片都自动混在同一个业务记录里；MinIO bucket 内是对象，数据库记录 URL 或 objectName。
+本地地址如 `http://localhost:9000/infinitechat/dp.jpg` 只适合本机开发。上线时应换成 MinIO 的域名、反向代理域名或 CDN 地址；代码中 `minio.url` 是生成下载地址时使用的基础地址。当前默认群头像对象是 `group/default-avatar.jpg`，由已有头像对象复制准备；它不代表所有用户图片都自动混在同一个业务记录里。MinIO bucket 内是对象，数据库记录 URL 或 objectName。
 
 ## 14. Canal 和冷热数据
 
@@ -648,7 +673,8 @@ redpacket-expire-zset
 还没有完全解决的地方：
 
 - 当前主要是本地单实例运行，没有真正压测多实例。
-- Netty 的 `ChannelManager` 是单机内存映射，跨实例推送还需要路由表或统一 WebSocket 网关。
+- Netty 的 `ChannelManager` 仍是单机内存映射；当前通过 Redis 路由表和 Redis Pub/Sub 完成跨实例推送，PushRouter 仍未引入。
+- 当前方案是第一版，Redis Pub/Sub 本身不保留消息；如果目标实例短暂不可用，需要依靠 MySQL/离线补拉，后续可按可靠性要求升级为 Redis Streams 或实例专属 Kafka Topic。
 - Kafka 消费幂等还应补数据库唯一键、Redis 去重或手动提交 offset 等配套。
 - 业务数据库事务和 Kafka 通知发送不是天然同一事务，通知失败需要重试/Outbox/补偿。
 - `store-notification-topic` 的完整消费、持久化和上线补拉链路需要继续确认。
@@ -673,4 +699,3 @@ redpacket-expire-zset
 最值得牢记的一句话是：
 
 > WebSocket 负责保持用户和服务器的实时连接；Netty 负责网络事件；Kafka 负责服务内部的异步消息流转；MySQL 负责可靠持久化；Canal 把 MySQL 变更传播到 Redis；Redis 负责缓存、状态、延迟任务和锁；Gateway/Nacos/OpenFeign 负责微服务之间的入口、发现和调用。
-

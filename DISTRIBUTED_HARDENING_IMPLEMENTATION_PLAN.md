@@ -2,9 +2,9 @@
 
 > 目的：把当前项目中已经存在的分布式组件，逐步补齐为可验证、可扩展、可恢复的实现。
 >
-> 本文只描述代码层、配置层、数据库层和验证层的改法。本次只新增文档，不修改 Java、YAML、SQL 或部署文件。
+> 本文只描述代码层、配置层、数据库层和验证层的改法。本次只调整文档，不修改 Java、YAML、SQL 或部署文件。
 >
-> 适用代码基线：当前仓库 `main` 分支。实际改动前应重新确认文件内容和数据库现状。
+> 适用代码基线：2026-09-19 当前工作区（含已有未提交改动）。以下“已实现”仅指源码和配置已具备，不代表已完成多实例验收；数据库约束和实际部署状态仍需另行确认。
 
 ## 0. 总体结论
 
@@ -41,13 +41,13 @@ Gateway + UserService + RealTimeService + OfflineDataService + RedPacketService
 | 1 | Snowflake 多实例使用相同节点编号，RealTimeService 的动态注入写法无效 | P0 | 改为 Spring Bean + 每实例唯一 workerId/datacenterId |
 | 2 | Kafka 自动提交 offset，消费者异常被捕获后不再抛出 | P0 | 手动 ack、重试、死信、幂等 |
 | 3 | 过期任务先从 Redis 删除，后发 Kafka | P0 | 改为发送成功后确认，或使用租约/Outbox |
-| 4 | WebSocket ChannelManager 只在本 JVM 有效 | P0 | Redis 路由表 + 实例专属推送通道 |
-| 5 | Netty 9101 没有作为 WebSocket 端口暴露给服务发现 | P1 | Nacos metadata 注册 `netty-port` |
-| 6 | Gateway 缺少 RedPacketService 路由 | P1 | 增加 `/api/chat/redPacket/**` 路由 |
+| 4 | ChannelManager 是本地状态；Redis 跨实例路由与 Pub/Sub 已实现，可靠性仍待验收 | P0 | 保留方案 A，验证重连、路由过期及补拉恢复 |
+| 5 | Netty 端口配置化、`netty-port` 注册与读取已实现 | P1 | 验证各实例端口、唯一实例 ID 和客户端可达地址 |
+| 6 | Gateway 已包含好友、群聊和红包路由 | P1 | 验证现有入口；新增会话等接口时同步补路由 |
 | 7 | 注册邮箱只靠 `synchronized(email.intern())`，且查询在锁外 | P1 | 数据库 email 唯一索引 + 捕获重复键 |
 | 8 | UserService 编译依赖 RedPacketService | P2 | 删除无实际使用的业务模块依赖 |
 | 9 | Kafka topic 默认副本数为 1 | P1 | 集群部署时副本数改为 3，实际 topic 重新扩容 |
-| 10 | 基础设施全部 localhost 单点 | P1 | 先支持多实例，再做中间件集群 |
+| 10 | 示例配置默认指向本地单点，已支持部分环境变量覆盖 | P1 | 先验证多实例，再按实际部署做中间件高可用 |
 
 ## 2. P0：修复 Snowflake 分布式 ID
 
@@ -133,6 +133,8 @@ Long id = idGenerator.nextId();
 - WebSocketHandler 生成 messageId。
 - RedPacketService 生成 redPacketId、balanceLogId、messageId 等。
 
+`WebSocketHandler` 当前由 `NettyService` 手动创建，不是 Spring 自动管理的 Bean；应由 `NettyService` 注入 ID 生成器，再传入每个连接的 Handler，不能只增加注解期待自动注入。
+
 ### 2.3 每个实例如何分配节点编号
 
 本地多实例测试先手动配置：
@@ -163,7 +165,7 @@ RealTimeService-2: workerId=4, datacenterId=1
 
 ### 2.4 数据库兜底
 
-所有雪花 ID 字段都应有主键或唯一索引。它不能代替正确的 workerId，但能在生成冲突时尽早暴露问题，而不是悄悄覆盖业务数据。
+由雪花 ID 标识的实体主键应有主键或唯一索引；消息表中的 `sender_id`、`session_id` 等关联字段允许重复，不能分别加唯一约束。主键约束不能代替正确的 workerId，但能在生成冲突时尽早暴露问题。
 
 ### 2.5 验收标准
 
@@ -196,6 +198,7 @@ enable-auto-commit: true
 - `UserService/.../FriendRequestExpirationExecutor.java`
 - `RedPacketService/.../DelayTaskEnqueuer.java`
 - `RedPacketService/.../ExpirationTaskExecutor.java`
+- `RedPacketService/.../RedPacketConsumer.java`（领取入账、领完事件）
 
 ### 3.2 第一阶段配置改法
 
@@ -225,9 +228,6 @@ public void consume(String message, Acknowledgment acknowledgment) {
         MessageRequest request = parse(message);
         messageService.saveMessageToMySQL(request);
         acknowledgment.acknowledge();
-    } catch (DuplicateKeyException e) {
-        // 已经处理过，重复消息可以确认 offset
-        acknowledgment.acknowledge();
     } catch (Exception e) {
         // 不确认，并交给 DefaultErrorHandler 重试
         throw e;
@@ -236,6 +236,8 @@ public void consume(String message, Acknowledgment acknowledgment) {
 ```
 
 注意：手动提交只能控制“什么时候确认消费”，不能消除重复消费。重复消费一定要靠业务幂等。
+
+只有核实重复键对应同一业务事件，且原业务已成功提交时，才可按重复消费确认；不能把所有 `DuplicateKeyException` 都当作成功，否则会掩盖 Snowflake 冲突或不完整处理。
 
 ### 3.4 重试和死信
 
@@ -293,9 +295,12 @@ WHERE apply_friend_id = ?
 - 客户端按 messageId 去重。
 - Redis 保存短期 `push:{userId}:{messageId}` 去重标记。
 - 每个消费实例在本地维护短期 Caffeine 去重缓存。
-- 消息推送前先判断 Channel 是否仍然 active。
 
-推送失败是否重试，要看消息是否已经由 `store-topic` 持久化。普通聊天推送失败可以依赖离线补拉，但消息落库失败不能直接确认 offset。
+Channel 是否 active 只是连接检查，不是幂等依据；本地缓存也不能保证跨实例去重。
+
+上述 `messageId` 唯一约束只解决同一 Kafka 事件重复消费。当前 WebSocket 每次收到请求都会生成新 `messageId`，消息表没有保存 `clientMessageId`；客户端复用该字段重发仍会产生新消息。若要满足前端“重试不重复”，需另补基于已认证发送者与 `clientMessageId` 的持久化幂等及原结果返回。红包发送目前也只有 3 秒防重复提交，不能作为长期幂等保证。
+
+推送失败是否重试，要看消息是否已经持久化。只有存储与补拉闭环完善后，普通聊天才能依赖补拉恢复（见第 5.4 节）；消息落库失败不能直接确认存储消费的 offset。
 
 ### 3.6 生产者发送确认
 
@@ -303,12 +308,14 @@ WHERE apply_friend_id = ?
 
 可以采用：
 
-- 发送 Future 等待确认，设置合理超时。
-- 本地事务提交后写 Outbox，再由后台发布。
+- 等待发送 Future 确认并设置合理超时；Netty 收包线程应使用异步衔接，不能阻塞整个事件循环。
+- 在业务数据所在的同一个本地事务内写 Outbox，事务提交后再由后台发布。
 - 使用 Kafka 事务时，配合数据库 Outbox 解决跨系统一致性。
 - 发送失败记录补偿表。
 
 `acks=all` 只说明 Kafka Producer 需要等待副本确认，不代表消费者幂等，也不代表 MySQL 事务和 Kafka 事务自动一致。
+
+当前普通消息与红包消息分别发送 `store-topic` 和 `message-topic`，两次发送并不原子；收到 WebSocket 回推不等于 MySQL 已落库。前端需要的发送确认应由 RealTimeService 通过 WebSocket 返回，并区分已接收与已持久化；持久化结果由 OfflineDataService 通过事件反馈。不能仅新增一个客户端调用的 HTTP ack 接口就宣称消息已可靠保存。
 
 ## 4. P0：修复红包过期任务丢失
 
@@ -359,6 +366,8 @@ for (String redPacketId : expiredIds) {
 ```
 
 这种方案会允许同一个任务在 Kafka 发送确认前被重复扫描，所以 `ExpirationTaskExecutor` 必须幂等。重复事件最终只能让一次状态更新和一次退款成功。
+
+这是实施前提：当前 `handleRedPacketExpiration` 先查状态再退款、`updateById`，不是原子条件流转；计算剩余金额的 Lua 还会先删除金额池，之后 MySQL 回滚也不能恢复 Redis。应先补齐退款金额的可恢复记录、状态条件更新与账务事务，再启用重复投递；仅修调度器或增加领取记录唯一索引不足以保证退款不丢。
 
 ### 4.3 更稳妥的 Redis 租约方案
 
@@ -420,7 +429,7 @@ updated_time
 
 ## 5. P0：WebSocket 多实例路由
 
-### 5.1 当前问题
+### 5.1 当前实现与剩余问题
 
 当前 `ChannelManager` 只保存当前 JVM 内的：
 
@@ -433,7 +442,9 @@ Kafka 的 `message-topic` 使用同一个消费组。多实例下，消费消息
 
 一致性哈希只能帮助“选择用户连接到哪个实例”，不能解决“Kafka 消费者最终在哪个实例执行”的问题。因此仅添加一致性哈希不够。
 
-### 5.2 第一步：把 Netty 端口注册到 Nacos metadata
+当前已通过 `WebSocketRouteService`、`WebSocketPushService` 和 Redis 订阅者补上跨实例转发。下面保留现有方案及验收要求，不再将这些组件列为待新增。
+
+### 5.2 已实现：Netty 端口注册到 Nacos metadata
 
 Spring HTTP 端口仍然保持给 Feign 使用，例如：
 
@@ -444,7 +455,7 @@ RealTimeService Netty: 9101
 
 不要把 Nacos 的主端口直接改成 9101，否则 Feign 可能会把 HTTP 请求发到 Netty 端口。
 
-在 RealTimeService 配置中增加 metadata，示例：
+RealTimeService 当前 metadata 配置为：
 
 ```yaml
 spring:
@@ -453,10 +464,10 @@ spring:
       discovery:
         metadata:
           netty-port: ${NETTY_SERVER_PORT:9101}
-          instance-id: ${INSTANCE_ID:realtime-1}
+          realtime-instance-id: ${REALTIME_INSTANCE_ID:realtime-${NETTY_SERVER_PORT:9101}}
 ```
 
-Netty 监听端口也从配置读取：
+Netty 监听端口已从配置读取：
 
 ```java
 @Value("${netty.server.port:9101}")
@@ -465,7 +476,7 @@ private int port;
 
 更推荐使用 `@ConfigurationProperties`，不要在字段上到处散落 `@Value`。
 
-`NettyServiceLocator` 改成：
+`NettyServiceLocator` 已按以下逻辑读取 metadata：
 
 ```java
 ServiceInstance instance = select(...);
@@ -478,27 +489,29 @@ return instance.getHost() + ":" + nettyPort + "/ws/netty";
 
 不要继续无条件使用 `instance.getPort()` 拼接 WebSocket 地址。
 
-### 5.3 第二步：建立用户到实例的共享路由
+运行时路由与订阅使用 `realtime.instance-id`，应与 metadata 的 `realtime-instance-id` 共用 `REALTIME_INSTANCE_ID`。默认值只含 Netty 端口，不同机器使用同一端口时必须显式配置不同实例 ID。Nacos 返回的主机地址还需对客户端可达，生产环境的 WSS 地址需要实际的 TLS 入口支持。
+
+### 5.3 已实现：共享路由与连接生命周期
 
 连接鉴权成功后，在 `WebSocketAuthHeader` 中写入 Redis：
 
 ```text
-ws:route:{userId} -> instanceId
+ws:route:{userId} -> instanceId|channelId
 ```
 
-同时设置 TTL，例如 30 秒：
+当前 TTL 由 `realtime.route-ttl-seconds` 配置，默认 60 秒：
 
 ```text
-SET ws:route:207... realtime-2 EX 30
+SET ws:route:207... realtime-2|channel-id EX 60
 ```
 
-需要保存的 instanceId 应来自配置或 Nacos 实例 ID，不能只保存随机本机名称。
+路由值包含实例 ID 和具体 Channel ID；下面 Lua 的比较值必须是完整的 `instanceId|channelId`，只比较实例 ID 无法区分同实例的新旧连接。
 
 连接生命周期：
 
 ```text
-握手成功 -> 写入路由并设置 TTL
-收到心跳 -> 续期 TTL
+握手鉴权通过 -> 写入路由并设置 TTL
+收到文本 ping -> 仅在完整路由值匹配时续期 TTL，并回复文本 pong
 channelInactive -> 只有当前值仍属于本 Channel 时才删除
 ```
 
@@ -517,11 +530,18 @@ return 0
 ws:route:{userId} Hash(channelId -> instanceId)
 ```
 
-当前项目先支持单设备连接会简单很多，但要明确这是业务限制。
+当前 token 与路由均按用户单值保存，按单设备模型接入。跨实例旧连接强制下线和离线时间归属仍需补齐，不能宣称已有完整的多端管理。客户端心跳间隔必须小于路由 TTL（默认配置下可取 20 秒）；后台暂停心跳后应重新握手登记路由，过期后的旧连接仅发心跳不会重建路由。
 
-### 5.4 第三步：实例间推送
+### 5.4 第三步：选择实例间推送方案
 
-推荐当前项目先采用 Redis Pub/Sub 作为实例间实时转发：
+这里有两种主要思路，不能把“Kafka 消费”和“Redis 转发”混为一件事：
+
+当前代码已落地方案 A：`WebSocketAuthHeader` 登记 Redis 路由，`ConsumerMessageService` 和
+`SystemNotificationConsumer` 统一通过 `WebSocketPushService` 推送；目标在本机时直接写入
+`ChannelManager`，目标在其他实例时发布到 `ws:push:{instanceId}`，由目标实例的 Redis
+订阅者接收后再写入本地 Channel。
+
+#### 方案 A：RealTimeService 消费后再转发（当前推荐的最小改法）
 
 ```text
 message-topic
@@ -534,9 +554,42 @@ message-topic
     -> writeAndFlush
 ```
 
-Redis Pub/Sub 只适合实时推送，因为它不保留历史消息。普通聊天消息已经走 `store-topic` 和 MySQL，推送失败后可以通过离线消息补拉恢复。
+优点：不需要新增服务，本机目标可以少一次转发，适合当前学习项目渐进改造。缺点是 Kafka 可能先把消息交给“没有目标连接”的实例，该实例需要多做一次 Redis 查询，并在跨实例时多一次转发。
 
-如果要求推送任务本身可恢复，可以使用 Kafka 实例专属 topic，但需要管理实例上下线、topic 生命周期和路由变化，复杂度更高。
+Redis Pub/Sub 只适合实时推送。普通聊天有 `store-topic -> MySQL -> Canal -> Redis` 存储链路，但两路 Kafka 发送独立，且当前热区间补拉依赖 Redis，没有覆盖该区间的 MySQL 回源兜底。因此“推送失败可补拉恢复”是需要补齐和验收的目标，不能当作当前无条件保证。
+
+系统通知另走 `system-notification-topic`；当前仅在路由失败且检测到离线标记时发送 `store-notification-topic`，仓库尚无对应存储消费者和通知历史接口。不能将系统通知按普通聊天消息写入或通过 `/api/message/offline` 补拉；第一版应重新查询好友申请等业务列表，通知历史作为后续独立能力补齐。
+
+#### 方案 B：增加 PushRouter，先统一路由再转发
+
+```text
+message-topic
+    -> PushRouter 消费
+    -> 查 Redis 得到 userId -> instanceId
+    -> 发布到 ws:push:{instanceId}
+    -> 目标 RealTimeService 订阅自己的 channel
+    -> ChannelManager 找 Channel
+    -> writeAndFlush
+```
+
+PushRouter 不是 Redis 自己完成的，而是一个独立的消费者组件。它可以部署多个实例并使用同一个 Kafka groupId，让 Kafka 在 Router 实例之间分摊 Partition。
+
+优点：RealTimeService 只负责 WebSocket 连接和本地推送，路由职责集中；不会由每个 RealTimeService 都承担“消息可能发错实例”的判断。缺点是所有实时推送都要经过 Router 和 Redis，多一个固定跳转；PushRouter 需要扩容、监控和故障处理，否则会形成新的瓶颈或单点。
+
+因此，PushRouter 不是绝对更好，而是把复杂度从每个 RealTimeService 集中到一个专门组件。当前项目已先实现方案 A；当推送量、实例数量或团队职责需要独立扩展时，再抽出方案 B。
+
+#### 不要把所有 Kafka Topic 都送进 Redis
+
+只有实时推送类 Topic 适合经过 PushRouter，例如：
+
+```text
+message-topic
+system-notification-topic
+```
+
+`store-topic`、好友申请过期、红包领取和红包过期等 Topic 仍然应该由各自业务消费者处理。Redis 是在线路由/转发层，不替代 Kafka 的持久化消息流。
+
+如果要求推送任务本身可恢复，可以评估 Redis Streams 或 Kafka 实例专属 Topic。现有 Pub/Sub 方案需先补齐上述存储和补拉闭环；切换转发介质仍需额外管理确认、重试、实例上下线、Topic 生命周期和路由变化。
 
 ### 5.5 WebSocket 验收测试
 
@@ -547,16 +600,18 @@ Redis Pub/Sub 只适合实时推送，因为它不保留历史消息。普通聊
 5. 关闭 B 的连接，确认 Redis 路由能过期或被删除。
 6. B 重新连接后，旧连接不能删除新连接的路由。
 7. B 多次发送心跳，确认路由 TTL 持续刷新。
+8. 暂停心跳超过 TTL 后重新握手，验证路由恢复；实例宕机后重新获取 `nettyUri` 并连接其他实例。
+9. 模拟推送或 Canal 延迟，验证补拉最终可恢复已持久化消息；系统通知单独验证。
 
-## 6. P1：补齐 Gateway 路由
+## 6. P1：核对 Gateway 路由与新增接口归属
 
-当前 Gateway 有 UserService 和 OfflineDataService 路由，但没有 RedPacketService。
+当前 Gateway 的本地配置和示例配置均已包含用户、好友、群聊、离线消息和红包路由。
 
 在：
 
 `Gateway/src/main/resources/application.yml`
 
-和对应的 `application.example.yml` 中增加：
+和对应的 `application.example.yml` 中已配置红包路由：
 
 ```yaml
 - id: RedPacketService
@@ -573,6 +628,8 @@ Redis Pub/Sub 只适合实时推送，因为它不保留历史消息。普通聊
 ```
 
 两者都应到达同一业务接口。
+
+前端规划的 `/api/session/**` 与 `/api/notification/**` 当前没有公开接口及网关路由。会话/成员归 UserService，新增的用户已读位置也建议归该服务；消息存储与查询仍归 OfflineDataService，会话摘要可通过内部调用或事件聚合。通知历史可在现有服务内补齐存储与查询，明确归属后再加路由，不因新 URL 就新建微服务。`/api/user/get/receivers` 和 `/api/user/get/sessions` 是现有 Feign 辅助接口，返回裸 ID 列表，不能直接替代前端会话详情与列表接口。
 
 WebSocket 不应直接把 Gateway 的普通 HTTP 路由当成 Netty 路由。短期可以由登录接口返回带 metadata 的 Netty 地址；长期可以部署专门支持 WebSocket 的网关/反向代理。
 
@@ -684,7 +741,7 @@ acks=all
 Redis 选择一种高可用模式即可：
 
 - Sentinel：主从 + 自动故障转移，适合现有单主模型改造。
-- Cluster：分片 + 故障转移，适合数据量和吞吐增长。
+- Cluster：作为后续分片方案，切换前需检查当前 `database: 2`、红包多键 Lua 和键命名的兼容性，不能只替换连接地址。
 
 WebSocket 路由、token、好友状态、ShedLock、延迟 ZSet 都依赖 Redis，共享 Redis 不能继续只依赖某台机器的 localhost。
 
@@ -697,6 +754,8 @@ WebSocket 路由、token、好友状态、ShedLock、延迟 ZSet 都依赖 Redis
 MySQL 需要主从、云数据库高可用或其他故障转移方案。Canal 连接的应该是稳定的 MySQL 主库/复制拓扑，而不是开发机 localhost。
 
 CanalClient 当前只监听 `message` 表 INSERT 并写 Redis。如果以后需要处理消息修改、删除或其他表，必须扩展事件类型和幂等处理。Canal 本身也需要重连、位点恢复和高可用方案。
+
+当前 CanalClient 随每个 OfflineDataService 启动，不能将 HTTP/Kafka 消费实例扩容等同于 Canal 消费高可用；扩容前应明确同一 destination 的消费归属和位点管理。现有代码已有重连与 ack/rollback，但 Redis 写失败被内部捕获后仍可能确认 Canal 批次，需先修正错误传播并提供热缓存回源或重建能力。
 
 ## 10. 代码实施顺序
 
@@ -718,21 +777,19 @@ CanalClient 当前只监听 `message` 表 INSERT 并写 Redis。如果以后需�
 4. 增大并配置化 ShedLock 的 `lockAtMostFor`。
 5. 对好友申请过期链路做相同检查。
 
-### 第 3 批：支持多实例 WebSocket
+### 第 3 批：验收并完善现有多实例 WebSocket
 
-1. Netty 端口配置化。
-2. Nacos metadata 注册真实 Netty 端口。
-3. 修复 `NettyServiceLocator` 读取 metadata。
-4. Redis 保存 userId 到实例的路由和 TTL。
-5. 连接/心跳/断开更新路由。
-6. Redis compare-and-delete 防止旧连接删除新连接路由。
-7. 增加实例间 Pub/Sub 转发。
-8. 做双实例跨机器测试。
+1. 验证已有端口配置、Nacos metadata 和 `NettyServiceLocator`。
+2. 配置全局唯一的 `REALTIME_INSTANCE_ID`，核对 `instanceId|channelId` 路由和 60 秒默认 TTL。
+3. 验证已有连接/文本心跳/断线路由维护与 compare-and-delete。
+4. 验证现有 Pub/Sub 转发，补齐持久化确认和离线补拉保障。
+5. 补齐跨实例旧连接处置、离线时间归属与故障后地址刷新。
+6. 做双实例跨机器测试。
 
 ### 第 4 批：入口和依赖整理
 
-1. Gateway 增加 RedPacketService 路由。
-2. 确认前端请求统一经过 Gateway。
+1. 验证已有 Gateway 好友、群聊、红包路由；随新增接口补充会话等路由。
+2. 确认业务 HTTP 请求经过 Gateway；WebSocket 使用服务端返回的地址，预签名上传直达对象存储。
 3. 删除 UserService 对 RedPacketService 的无用编译依赖。
 4. 为服务配置环境变量，不把真实密码提交到仓库。
 
@@ -800,7 +857,7 @@ B 重新连接后旧连接断开不会删除新连接路由
                          Nacos 服务发现/负载均衡
               +-------------------+-------------------+
               |                   |                   |
-        UserService x 2     OfflineService x 2   RedPacketService x 2
+        UserService x 2   OfflineDataService x 2  RedPacketService x 2
               |                   |                   |
               +-----------+-------+-------------------+
                           |
@@ -831,4 +888,3 @@ RealTimeService x 2                  Canal -> Redis 热消息
 一句话原则：
 
 > 分布式系统不是把服务启动在不同端口就完成了；必须同时保证实例发现、请求路由、ID 唯一、消息不丢、重复可安全处理、任务可恢复，以及 WebSocket 能跨实例找到连接。
-

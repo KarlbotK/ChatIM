@@ -14,6 +14,7 @@ import io.netty.util.NettyRuntime;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -23,7 +24,8 @@ import org.springframework.kafka.core.KafkaTemplate;
 public class NettyService {
 
 
-    private final int port = 9101;
+    @Value("${netty.server.port:9101}")
+    private int port;
 
     //*1(大堂经理)
     private final NioEventLoopGroup bossGroup = new NioEventLoopGroup(1);
@@ -34,6 +36,8 @@ public class NettyService {
     private final StringRedisTemplate stringRedisTemplate;
 
     private final KafkaTemplate<String, String> kafkaTemplate;
+
+    private final WebSocketRouteService webSocketRouteService;
 
 
     @PostConstruct
@@ -66,11 +70,15 @@ public class NettyService {
                         // 7. 把分段HTTP请求聚合成完整HTTP请求
                         channelPipeline.addLast(new HttpObjectAggregator(65536));
                         //7.5 验证Token
-                        channelPipeline.addLast(new WebSocketAuthHeader(stringRedisTemplate));
+                        channelPipeline.addLast(new WebSocketAuthHeader(stringRedisTemplate, webSocketRouteService));
                         // 8. 把HTTP连接升级为WebSocket连接
                         channelPipeline.addLast(new WebSocketServerProtocolHandler("/ws/netty"));
                         // 9. 处理真正的WebSocket聊天消息
-                        channelPipeline.addLast(new WebSocketHandler(stringRedisTemplate,kafkaTemplate));
+                        channelPipeline.addLast(new WebSocketHandler(
+                                stringRedisTemplate,
+                                kafkaTemplate,
+                                webSocketRouteService
+                        ));
 
                     }
                 });

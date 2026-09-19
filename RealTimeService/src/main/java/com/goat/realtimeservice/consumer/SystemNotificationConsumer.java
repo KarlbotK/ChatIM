@@ -4,10 +4,7 @@ package com.goat.realtimeservice.consumer;
 import cn.hutool.json.JSONUtil;
 import com.goat.common.constant.CommonConstant;
 import com.goat.realtimeservice.utils.OnlineStatusUtil;
-import com.goat.realtimeservice.websocket.ChannelManager;
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
+import com.goat.realtimeservice.websocket.WebSocketPushService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -31,11 +28,14 @@ public class SystemNotificationConsumer {
 
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final StringRedisTemplate stringRedisTemplate;
+    private final WebSocketPushService webSocketPushService;
 
     public SystemNotificationConsumer(KafkaTemplate<String, String> kafkaTemplate,
-                                      StringRedisTemplate stringRedisTemplate) {
+                                      StringRedisTemplate stringRedisTemplate,
+                                      WebSocketPushService webSocketPushService) {
         this.kafkaTemplate = kafkaTemplate;
         this.stringRedisTemplate = stringRedisTemplate;
+        this.webSocketPushService = webSocketPushService;
     }
 
     @KafkaListener(
@@ -53,24 +53,10 @@ public class SystemNotificationConsumer {
             Integer type = (Integer) notificationMap.get("type");
             Long receiverId = Long.parseLong(notificationMap.get("receiverId").toString());
 
-            // 2. 获取用户的WebSocket Channel
-            Channel channel = ChannelManager.getChannelByUserId(String.valueOf(receiverId));
-
-            if (channel != null && channel.isActive()) {
-                // 3. 用户在线，直接转发完整消息
-                TextWebSocketFrame frame = new TextWebSocketFrame(message);
-                channel.writeAndFlush(frame).addListener((ChannelFutureListener) future -> {
-                    if (future.isSuccess()) {
-                        log.info("系统通知推送成功，messageId: {}, receiverId: {}, type: {}",
-                                messageId, receiverId, type);
-                    } else {
-                        log.error("系统通知推送失败，messageId: {}, receiverId: {}, type: {}, 错误: {}",
-                                messageId, receiverId, type,
-                                future.cause() != null ? future.cause().getMessage() : "未知错误");
-                    }
-                });
-            } else {
-                // 4. 用户离线，转入持久化 topic（让用户上线后能补拉历史）
+            // 2. 用户在线时本机推送，或转发到用户所在的 RealTimeService 实例
+            boolean routed = webSocketPushService.pushToUser(receiverId, message);
+            if (!routed) {
+                // 3. 用户离线，转入持久化 topic（让用户上线后能补拉历史）
                 if (OnlineStatusUtil.isUserOffline(stringRedisTemplate, receiverId)) {
                     log.info("用户离线，系统通知发送到Kafka进行持久化，messageId: {}, receiverId: {}, type: {}",
                             messageId, receiverId, type);

@@ -31,12 +31,23 @@ spring:
     nacos:
       discovery:
         server-addr: ${NACOS_SERVER_ADDR:localhost:18375}
+        metadata:
+          netty-port: ${NETTY_SERVER_PORT:9101}
+          realtime-instance-id: ${REALTIME_INSTANCE_ID:realtime-${NETTY_SERVER_PORT:9101}}
     openfeign:
       circuitbreaker:
         enabled: ${FEIGN_CIRCUITBREAKER_ENABLED:true}
 
 server:
   port: ${SERVER_PORT:8102}
+
+netty:
+  server:
+    port: ${NETTY_SERVER_PORT:9101}
+
+realtime:
+  instance-id: ${REALTIME_INSTANCE_ID:realtime-${NETTY_SERVER_PORT:9101}}
+  route-ttl-seconds: ${REALTIME_ROUTE_TTL_SECONDS:60}
 
 snowflake:
   workerId: ${SNOWFLAKE_WORKER_ID:1}

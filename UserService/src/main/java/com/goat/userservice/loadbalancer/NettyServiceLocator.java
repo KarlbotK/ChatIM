@@ -23,6 +23,13 @@ public class NettyServiceLocator {
         }
         ServiceInstance instance = new UrlHashLoadBalancer().select(instances, userId);
 
-        return instance.getHost() + ":" + instance.getPort() + CommonConstant.NETTY_SERVICE_URI;
+        String nettyPort = instance.getMetadata() == null
+                ? null
+                : instance.getMetadata().get("netty-port");
+        if (nettyPort == null || nettyPort.isBlank()) {
+            throw new IllegalStateException("RealTimeService 缺少 netty-port metadata");
+        }
+
+        return instance.getHost() + ":" + nettyPort + CommonConstant.NETTY_SERVICE_URI;
     }
 }
