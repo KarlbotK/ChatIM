@@ -4,6 +4,7 @@ import {
   type ReactNode,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -76,6 +77,11 @@ import {
   type CreateGroupResult,
   type InviteGroupResult,
 } from "./groups";
+import {
+  MediaApiError,
+  prepareChatImage,
+  uploadChatImage,
+} from "./media";
 
 type Phase = "booting" | "signed-out" | "signed-in";
 type LoginMode = "password" | "code";
@@ -1039,6 +1045,68 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
             }));
           }, 760);
         }}
+        onSendImage={async (file) => {
+          const clientMessageId = makeClientMessageId();
+          let queued = false;
+          try {
+            const prepared = await prepareChatImage(file);
+            queued = true;
+            const outgoing: ChatMessage = {
+              id: clientMessageId,
+              mine: true,
+              kind: "image",
+              content: prepared.previewUrl,
+              imageName: prepared.originalName,
+              imageWidth: prepared.width,
+              imageHeight: prepared.height,
+              imageSize: prepared.size,
+              uploadProgress: 0,
+              time: formatClock(new Date()),
+              status: "uploading",
+            };
+            setMessages((items) => ({
+              ...items,
+              [activeConversation.id]: [...(items[activeConversation.id] ?? []), outgoing],
+            }));
+            setConversations((items) => [
+              ...items
+                .map((item) => item.id === activeConversation.id
+                  ? { ...item, preview: "[图片]", time: "刚刚", failed: false, draft: undefined }
+                  : item)
+                .sort((a, b) => Number(b.id === activeConversation.id) - Number(a.id === activeConversation.id)),
+            ]);
+
+            const uploaded = await uploadChatImage(session, prepared, (progress) => {
+              setMessages((items) => ({
+                ...items,
+                [activeConversation.id]: (items[activeConversation.id] ?? []).map((item) =>
+                  item.id === clientMessageId ? { ...item, uploadProgress: progress } : item,
+                ),
+              }));
+            });
+            setMessages((items) => ({
+              ...items,
+              [activeConversation.id]: (items[activeConversation.id] ?? []).map((item) =>
+                item.id === clientMessageId
+                  ? { ...item, content: uploaded.downloadUrl, uploadProgress: 100, status: demoModeEnabled ? "sent" : "unknown" }
+                  : item,
+              ),
+            }));
+          } catch (error) {
+            if (queued) {
+              setMessages((items) => ({
+                ...items,
+                [activeConversation.id]: (items[activeConversation.id] ?? []).map((item) =>
+                  item.id === clientMessageId ? { ...item, status: "failed" } : item,
+                ),
+              }));
+              setConversations((items) => items.map((item) => item.id === activeConversation.id
+                ? { ...item, failed: true, preview: "[图片发送失败]" }
+                : item));
+            }
+            throw error;
+          }
+        }}
       />
     );
   }
@@ -1206,7 +1274,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
 
 type TabId = "messages" | "contacts" | "discover" | "profile";
 type AvatarTone = "green" | "blue" | "terracotta" | "gold" | "violet";
-type MessageStatus = "sending" | "sent" | "unknown" | "failed";
+type MessageStatus = "sending" | "uploading" | "sent" | "unknown" | "failed";
 type ContactSurface =
   | { kind: "search" }
   | { kind: "applications" }
@@ -1257,6 +1325,12 @@ type ChatMessage = {
   content: string;
   time: string;
   status?: MessageStatus;
+  kind?: "text" | "image";
+  imageName?: string;
+  imageWidth?: number;
+  imageHeight?: number;
+  imageSize?: number;
+  uploadProgress?: number;
 };
 
 type Contact = {
@@ -1291,7 +1365,19 @@ const demoMessages: Record<string, ChatMessage[]> = {
     { id: "m6", mine: true, content: "今天有点忙，晚点给你回电话。", time: "昨天 18:20", status: "sent" },
     { id: "m7", mine: false, content: "好，等你忙完再说", time: "昨天 18:23" },
   ],
-  "c-family": [{ id: "m8", mine: false, content: "周末回家吃饭吗？", time: "周三 20:05" }],
+  "c-family": [
+    { id: "m8", mine: false, content: "周末回家吃饭吗？", time: "周三 20:05" },
+    {
+      id: "m8-image",
+      mine: false,
+      kind: "image",
+      content: "/app-assets/login-connection-collage.png",
+      imageName: "周末照片.jpg",
+      imageWidth: 853,
+      imageHeight: 1855,
+      time: "周三 20:06",
+    },
+  ],
   "c-muji": [{ id: "m9", mine: false, content: "这周的展览值得去看看", time: "周二 14:16" }],
 };
 
@@ -2081,6 +2167,7 @@ function ChatScreen({
   onBack,
   onOpenDetails,
   onSend,
+  onSendImage,
 }: {
   conversation: Conversation;
   messages: ChatMessage[];
@@ -2089,11 +2176,15 @@ function ChatScreen({
   onBack: () => void;
   onOpenDetails: () => void;
   onSend: (content: string) => void;
+  onSendImage: (file: File) => Promise<void>;
 }) {
   const keyboard = useKeyboard();
   const { bottomInset, isKeyboardVisible } = useKeyboardInsets();
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const [showTools, setShowTools] = useState(false);
   const [toast, setToast] = useState("");
+  const [imageBusy, setImageBusy] = useState(false);
+  const [previewImage, setPreviewImage] = useState<ChatMessage | null>(null);
 
   useEffect(() => {
     if (isKeyboardVisible) setShowTools(false);
@@ -2110,6 +2201,28 @@ function ChatScreen({
     setShowTools(false);
     setToast(`${label}将在后续联调中开放`);
     window.setTimeout(() => setToast(""), 1_800);
+  };
+
+  const selectImage = () => {
+    keyboard.hide();
+    setShowTools(false);
+    imageInputRef.current?.click();
+  };
+
+  const handleImage = async (file?: File) => {
+    if (!file || imageBusy) return;
+    setImageBusy(true);
+    setToast("正在处理并上传图片…");
+    try {
+      await onSendImage(file);
+      setToast("图片已加入会话");
+    } catch (error) {
+      setToast(toMediaErrorMessage(error));
+    } finally {
+      setImageBusy(false);
+      if (imageInputRef.current) imageInputRef.current.value = "";
+      window.setTimeout(() => setToast(""), 2_200);
+    }
   };
 
   return (
@@ -2138,10 +2251,29 @@ function ChatScreen({
             <div className={`message-line ${message.mine ? "mine" : "theirs"}`} key={message.id}>
               {!message.mine ? <Avatar label={conversation.avatar} tone={conversation.avatarTone} /> : null}
               <div className="message-stack">
-                <div className="message-bubble">{message.content}</div>
+                {message.kind === "image" ? (
+                  <button
+                    type="button"
+                    className={`image-message-bubble ${message.status === "failed" ? "failed" : ""}`}
+                    onClick={() => {
+                      keyboard.hide();
+                      setPreviewImage(message);
+                    }}
+                    aria-label={`查看图片${message.imageName ? `：${message.imageName}` : ""}`}
+                  >
+                    <img src={message.content} alt={message.imageName || "聊天图片"} draggable="false" />
+                    {message.status === "uploading" ? (
+                      <span className="image-upload-overlay"><i /><b>{message.uploadProgress || 0}%</b></span>
+                    ) : null}
+                    {message.status === "failed" ? <span className="image-failed-overlay">上传失败<br />请重新选择</span> : null}
+                  </button>
+                ) : (
+                  <div className="message-bubble">{message.content}</div>
+                )}
                 <div className={`message-foot ${message.status || ""}`}>
                   <time>{message.time}</time>
                   {message.status === "sending" ? <><i />发送中</> : null}
+                  {message.status === "uploading" ? <><i />上传中 {message.uploadProgress || 0}%</> : null}
                   {message.status === "sent" ? <><CheckIcon />已发送</> : null}
                   {message.status === "unknown" ? <>结果待确认</> : null}
                   {message.status === "failed" ? <>发送失败</> : null}
@@ -2155,13 +2287,33 @@ function ChatScreen({
 
       {toast ? <div className="chat-toast" role="status">{toast}</div> : null}
 
+      {previewImage ? (
+        <div className="image-preview-screen" role="dialog" aria-modal="true" aria-label="图片预览">
+          <button type="button" className="image-preview-close" onClick={() => setPreviewImage(null)} aria-label="关闭图片预览"><Cross2Icon /></button>
+          <img src={previewImage.content} alt={previewImage.imageName || "聊天图片预览"} draggable="false" />
+          <div className="image-preview-meta">
+            <strong>{previewImage.imageName || "聊天图片"}</strong>
+            <small>{formatImageMeta(previewImage)}</small>
+          </div>
+        </div>
+      ) : null}
+
       {showTools ? (
         <div className="chat-tool-tray" style={{ bottom: bottomInset + 68 }}>
-          <button type="button" onClick={() => showComingSoon("图片发送")}><span><ImageIcon /></span>图片</button>
+          <button type="button" onClick={selectImage} disabled={imageBusy} aria-label="选择图片"><span><ImageIcon /></span>{imageBusy ? "处理中" : "图片"}</button>
           <button type="button" onClick={() => showComingSoon("红包")}><span className="packet-symbol">¥</span>红包</button>
           <button type="button" onClick={() => showComingSoon("文件发送")}><span><FileIcon /></span>文件</button>
         </div>
       ) : null}
+
+      <input
+        ref={imageInputRef}
+        className="chat-image-input"
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        tabIndex={-1}
+        onChange={(event) => void handleImage(event.target.files?.[0])}
+      />
 
       <footer className="chat-composer" style={{ bottom: bottomInset }}>
         <button type="button" className="composer-tool" onClick={() => showComingSoon("表情")} aria-label="选择表情"><FaceIcon /></button>
@@ -2310,6 +2462,15 @@ function formatClock(date: Date) {
   return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
 }
 
+function formatImageMeta(message: ChatMessage) {
+  const dimensions = message.imageWidth && message.imageHeight ? `${message.imageWidth} × ${message.imageHeight}` : "原图";
+  if (!message.imageSize) return dimensions;
+  const size = message.imageSize >= 1024 * 1024
+    ? `${(message.imageSize / 1024 / 1024).toFixed(1)} MB`
+    : `${Math.max(1, Math.round(message.imageSize / 1024))} KB`;
+  return `${dimensions} · ${size}`;
+}
+
 function toErrorMessage(error: unknown) {
   if (error instanceof AuthApiError || error instanceof Error) return error.message;
   return "操作没有完成，请稍后重试";
@@ -2323,4 +2484,9 @@ function toContactErrorMessage(error: unknown) {
 function toGroupErrorMessage(error: unknown) {
   if (error instanceof GroupApiError || error instanceof Error) return error.message;
   return "群聊操作没有完成，请稍后重试";
+}
+
+function toMediaErrorMessage(error: unknown) {
+  if (error instanceof MediaApiError || error instanceof Error) return error.message;
+  return "图片没有发送成功，请稍后重试";
 }

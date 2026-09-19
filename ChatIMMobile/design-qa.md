@@ -64,6 +64,17 @@
 - The final demo and real-mode browser sessions reported no console errors or warnings.
 - Evidence screenshots: `output/playwright/group-create-result.png`, `output/playwright/group-invite-result.png`, and `output/playwright/group-invite-pixel.png`.
 
+### Round 5: image messages
+
+- Playwright verified image selection from the chat tool tray, local validation, upload completion, image bubbles, the conversation-list `[图片]` preview, and full-screen image viewing.
+- A sent demo image was verified after a full reload, including its filename, dimensions, size metadata, and sent state.
+- Invalid non-image selection was rejected before any upload request or new message was created.
+- A separate real-mode pass validated `GET /api/user/uploadUrl?fileName=chat%2F...` with both token headers, followed by a direct `PUT` to the returned MinIO URL with `Content-Type: image/png`.
+- Real mode keeps the uploaded message in “结果待确认” because the WebSocket acknowledgement contract is still incomplete; the UI does not claim server delivery from a successful object upload alone.
+- iPhone and Pixel 10 full-screen previews were inspected. The preview begins below protected status-bar chrome so system indicators remain readable.
+- The final demo and real-mode sessions reported no console errors or warnings.
+- Evidence screenshots: `output/playwright/image-message-sent.png`, `output/playwright/image-preview-statusbar.png`, and `output/playwright/image-preview-pixel.png`.
+
 ## Comparison History
 
 1. Initial browser pass found a P2 layout issue: browser focus scrolling moved the framed device itself after authentication, which shifted the main page upward and left the simulated keyboard visible in the clipped frame.
