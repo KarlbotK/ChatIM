@@ -56,6 +56,19 @@ import {
   sendCaptcha,
   type AuthSession,
 } from "./auth";
+import {
+  ContactApiError,
+  fetchFriendApplicationCount,
+  fetchFriendApplications,
+  fetchFriendDetail,
+  fetchFriends,
+  searchUser,
+  sendFriendRequest,
+  updateFriendApplications,
+  type ApplicationDecision,
+  type FriendApplication,
+  type FriendProfile,
+} from "./contacts";
 
 type Phase = "booting" | "signed-out" | "signed-in";
 type LoginMode = "password" | "code";
@@ -671,6 +684,9 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
   const [conversations, setConversations] = useState<Conversation[]>(() => loadConversations(session.userId));
   const [messages, setMessages] = useState<Record<string, ChatMessage[]>>(() => loadMessages(session.userId));
   const [drafts, setDrafts] = useState<Record<string, string>>(() => loadDrafts(session.userId));
+  const [contacts, setContacts] = useState<Contact[]>(() => loadContacts(session.userId));
+  const [applications, setApplications] = useState<FriendApplication[]>(() => loadApplications(session.userId));
+  const [contactSurface, setContactSurface] = useState<ContactSurface>(null);
   const [notice, setNotice] = useState("");
 
   const tabs = useMemo(
@@ -689,9 +705,10 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
   const filteredConversations = conversations.filter((item) =>
     `${item.name} ${item.preview}`.toLocaleLowerCase().includes(normalizedQuery),
   );
-  const filteredContacts = demoContacts.filter((item) =>
+  const filteredContacts = contacts.filter((item) =>
     `${item.name} ${item.note}`.toLocaleLowerCase().includes(normalizedQuery),
   );
+  const applicationUnread = applications.filter((item) => item.isReceiver === 1 && item.status === 0).length;
 
   useEffect(() => {
     saveDrafts(session.userId, drafts);
@@ -701,10 +718,32 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
     saveChatState(session.userId, conversations, messages);
   }, [conversations, messages, session.userId]);
 
+  useEffect(() => {
+    saveContactState(session.userId, contacts, applications);
+  }, [applications, contacts, session.userId]);
+
+  useEffect(() => {
+    if (demoModeEnabled) return;
+    let active = true;
+    Promise.all([fetchFriends(session), fetchFriendApplications(session), fetchFriendApplicationCount(session)])
+      .then(([friendItems, applicationItems]) => {
+        if (!active) return;
+        setContacts(friendItems.map(toContact));
+        setApplications(applicationItems);
+      })
+      .catch(() => {
+        // Keep the last local cache visible when the gateway or UserService is unavailable.
+      });
+    return () => {
+      active = false;
+    };
+  }, [session]);
+
   const switchTab = (nextTab: TabId) => {
     keyboard.hide();
     setTab(nextTab);
     setQuery("");
+    setContactSurface(null);
     setNotice("");
   };
 
@@ -717,6 +756,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
   };
 
   const openContactConversation = (contact: Contact) => {
+    setContactSurface(null);
     const existing = conversations.find((item) => item.id === contact.conversationId);
     if (existing) {
       openConversation(existing.id);
@@ -737,6 +777,72 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
     setMessages((items) => ({ ...items, [contact.conversationId]: [] }));
     setActiveConversationId(contact.conversationId);
   };
+
+  const ensureContactFromProfile = (profile: FriendProfile, decision?: ApplicationDecision) => {
+    const next = toContact({
+      userId: profile.userId,
+      nickname: profile.nickname,
+      avatar: profile.avatar,
+      status: 0,
+      signature: profile.signature,
+      sessionId: decision?.sessionId || profile.sessionId || `c-${profile.userId}`,
+    });
+    setContacts((items) => [next, ...items.filter((item) => item.id !== next.id)]);
+    return next;
+  };
+
+  if (contactSurface?.kind === "search") {
+    return (
+      <FriendSearchScreen
+        session={session}
+        onBack={() => setContactSurface(null)}
+        onOpenProfile={(profile) => setContactSurface({ kind: "profile", profile, returnTo: "search" })}
+      />
+    );
+  }
+
+  if (contactSurface?.kind === "applications") {
+    return (
+      <FriendApplicationsScreen
+        session={session}
+        applications={applications}
+        onApplicationsChange={setApplications}
+        onBack={() => setContactSurface(null)}
+        onAccepted={(application, decision) => ensureContactFromProfile({
+          userId: application.userId,
+          nickname: application.nickname,
+          avatar: application.avatar,
+          signature: application.msg,
+          status: 0,
+          sessionId: typeof decision === "object" ? decision.sessionId : `c-${application.userId}`,
+        }, typeof decision === "object" ? decision : undefined)}
+        onMessage={(application) => {
+          const contact = contacts.find((item) => item.id === application.userId) || ensureContactFromProfile({
+            userId: application.userId,
+            nickname: application.nickname,
+            avatar: application.avatar,
+            signature: application.msg,
+            status: 0,
+            sessionId: `c-${application.userId}`,
+          });
+          openContactConversation(contact);
+        }}
+      />
+    );
+  }
+
+  if (contactSurface?.kind === "profile") {
+    const initialProfile = contactSurface.profile || contactToProfile(contactSurface.contact!);
+    return (
+      <FriendProfileScreen
+        session={session}
+        initialProfile={initialProfile}
+        shouldLoadDetail={!demoModeEnabled && Boolean(contactSurface.contact)}
+        onBack={() => setContactSurface(contactSurface.returnTo === "search" ? { kind: "search" } : null)}
+        onMessage={(profile) => openContactConversation(ensureContactFromProfile(profile))}
+      />
+    );
+  }
 
   if (activeConversation) {
     return (
@@ -806,7 +912,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
               type="button"
               onClick={() => {
                 if (tab === "messages") switchTab("contacts");
-                else setNotice("用户搜索会在好友接口联调后开放");
+                else setContactSurface({ kind: "search" });
               }}
               aria-label={tab === "messages" ? "发起会话" : "添加联系人"}
             >
@@ -857,19 +963,31 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
               <SearchField value={query} onChange={setQuery} placeholder="搜索联系人" />
               {notice ? <p className="page-notice" role="status">{notice}</p> : null}
               <section className="contact-shortcuts" aria-label="通讯录入口">
-                <ShortcutRow icon={<BellIcon />} tone="terracotta" label="新的朋友" meta="2 条申请" badge="2" />
-                <ShortcutRow icon={<ChatBubbleIcon />} tone="green" label="群聊" meta="3 个群聊" />
+                <ShortcutRow
+                  icon={<BellIcon />}
+                  tone="terracotta"
+                  label="新的朋友"
+                  meta={applicationUnread > 0 ? `${applicationUnread} 条待处理` : "暂无未读申请"}
+                  badge={applicationUnread > 0 ? String(applicationUnread) : undefined}
+                  onClick={() => setContactSurface({ kind: "applications" })}
+                />
+                <ShortcutRow icon={<ChatBubbleIcon />} tone="green" label="群聊" meta="3 个群聊" onClick={() => setNotice("群聊创建将在下一轮接入")} />
               </section>
               <section className="contact-section">
-                <div className="section-heading"><span>好友</span><small>{demoModeEnabled ? filteredContacts.length : 0} 位</small></div>
-                {demoModeEnabled ? filteredContacts.map((contact) => (
-                  <button className="contact-row" type="button" key={contact.id} onClick={() => openContactConversation(contact)}>
+                <div className="section-heading"><span>好友</span><small>{filteredContacts.length} 位</small></div>
+                {filteredContacts.map((contact) => (
+                  <button
+                    className="contact-row"
+                    type="button"
+                    key={contact.id}
+                    onClick={() => setContactSurface({ kind: "profile", contact, returnTo: "contacts" })}
+                  >
                     <Avatar label={contact.avatar} tone={contact.avatarTone} online={contact.presence === "在线"} />
                     <span className="contact-copy"><strong>{contact.name}</strong><small>{contact.note}</small></span>
                     <ChevronRightIcon />
                   </button>
-                )) : <CompactEmpty text="好友列表将在接口联调后显示" />}
-                {demoModeEnabled && filteredContacts.length === 0 ? <CompactEmpty text="没有找到这位联系人" /> : null}
+                ))}
+                {filteredContacts.length === 0 ? <CompactEmpty text={contacts.length === 0 ? "还没有联系人，试试添加朋友" : "没有找到这位联系人"} /> : null}
               </section>
             </>
           ) : null}
@@ -921,7 +1039,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
             <span className="nav-icon-wrap">
               {item.icon}
               {item.id === "messages" && unreadTotal > 0 ? <b>{unreadTotal > 99 ? "99+" : unreadTotal}</b> : null}
-              {item.id === "contacts" && demoModeEnabled ? <b>2</b> : null}
+              {item.id === "contacts" && applicationUnread > 0 ? <b>{applicationUnread > 99 ? "99+" : applicationUnread}</b> : null}
             </span>
             <span>{item.label}</span>
           </button>
@@ -934,6 +1052,11 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
 type TabId = "messages" | "contacts" | "discover" | "profile";
 type AvatarTone = "green" | "blue" | "terracotta" | "gold" | "violet";
 type MessageStatus = "sending" | "sent" | "unknown" | "failed";
+type ContactSurface =
+  | { kind: "search" }
+  | { kind: "applications" }
+  | { kind: "profile"; contact?: Contact; profile?: FriendProfile; returnTo: "search" | "contacts" }
+  | null;
 
 type Conversation = {
   id: string;
@@ -1003,6 +1126,49 @@ const demoContacts: Contact[] = [
   { id: "u-anan", conversationId: "c-anan", name: "安安", avatar: "安", avatarTone: "gold", note: "大学同学", presence: "3 小时前在线" },
 ];
 
+const demoApplications: FriendApplication[] = [
+  { userId: "u-gunian", nickname: "顾念", avatar: null, msg: "你好，我们在山野摄影社见过", status: 0, time: "2026-09-19T09:42:00", isReceiver: 1 },
+  { userId: "u-jiangyu", nickname: "江屿", avatar: null, msg: "我是林一的朋友，想认识一下", status: 0, time: "2026-09-18T20:16:00", isReceiver: 1 },
+  { userId: "u-zhou", nickname: "周周", avatar: null, msg: "下次一起去看展吧", status: 1, time: "2026-09-17T16:08:00", isReceiver: 1 },
+  { userId: "u-xiaobei", nickname: "小北", avatar: null, msg: "你好呀", status: 4, time: "2026-08-20T11:30:00", isReceiver: 1 },
+];
+
+function toneFromId(value: string): AvatarTone {
+  const tones: AvatarTone[] = ["green", "blue", "terracotta", "gold", "violet"];
+  const score = [...value].reduce((total, character) => total + character.charCodeAt(0), 0);
+  return tones[score % tones.length];
+}
+
+function toContact(item: {
+  userId: string;
+  nickname: string;
+  avatar?: string | null;
+  status?: number;
+  signature?: string | null;
+  sessionId?: string | null;
+}): Contact {
+  return {
+    id: item.userId,
+    conversationId: item.sessionId || `c-${item.userId}`,
+    name: item.nickname,
+    avatar: item.nickname.slice(0, 1) || "友",
+    avatarTone: toneFromId(item.userId),
+    note: item.signature || "ChatIM 联系人",
+    presence: "最近在线",
+  };
+}
+
+function contactToProfile(contact: Contact): FriendProfile {
+  return {
+    userId: contact.id,
+    nickname: contact.name,
+    avatar: null,
+    signature: contact.note,
+    sessionId: contact.conversationId,
+    status: 0,
+  };
+}
+
 function SearchField({ value, onChange, placeholder }: { value: string; onChange: (value: string) => void; placeholder: string }) {
   return (
     <label className="content-search" data-scroll-drag="ignore">
@@ -1044,9 +1210,23 @@ function ConversationRow({ conversation, onClick }: { conversation: Conversation
   );
 }
 
-function ShortcutRow({ icon, tone, label, meta, badge }: { icon: ReactNode; tone: AvatarTone; label: string; meta: string; badge?: string }) {
+function ShortcutRow({
+  icon,
+  tone,
+  label,
+  meta,
+  badge,
+  onClick,
+}: {
+  icon: ReactNode;
+  tone: AvatarTone;
+  label: string;
+  meta: string;
+  badge?: string;
+  onClick?: () => void;
+}) {
   return (
-    <button className="shortcut-row" type="button">
+    <button className="shortcut-row" type="button" onClick={onClick}>
       <span className={`shortcut-icon ${tone}`}>{icon}{badge ? <b>{badge}</b> : null}</span>
       <span><strong>{label}</strong><small>{meta}</small></span>
       <ChevronRightIcon />
@@ -1067,6 +1247,345 @@ function FeatureRow({ icon, tone, label, description }: { icon: ReactNode; tone:
 
 function CompactEmpty({ text }: { text: string }) {
   return <div className="compact-empty"><MagnifyingGlassIcon /><span>{text}</span></div>;
+}
+
+function SubpageHeader({
+  title,
+  subtitle,
+  onBack,
+  action,
+}: {
+  title: string;
+  subtitle?: string;
+  onBack: () => void;
+  action?: ReactNode;
+}) {
+  return (
+    <header className="subpage-header">
+      <button type="button" onClick={onBack} aria-label="返回"><ArrowLeftIcon /></button>
+      <div><strong>{title}</strong>{subtitle ? <small>{subtitle}</small> : null}</div>
+      <span className="subpage-header-action">{action}</span>
+    </header>
+  );
+}
+
+function FriendSearchScreen({
+  session,
+  onBack,
+  onOpenProfile,
+}: {
+  session: AuthSession;
+  onBack: () => void;
+  onOpenProfile: (profile: FriendProfile) => void;
+}) {
+  const keyboard = useKeyboard();
+  const [keyword, setKeyword] = useState("");
+  const [result, setResult] = useState<FriendProfile | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const value = keyword.trim();
+    if (!emailPattern.test(value) && !/^1\d{10}$/.test(value)) {
+      setError("请输入完整的邮箱或 11 位手机号");
+      setResult(null);
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+    setResult(null);
+    try {
+      const profile = await searchUser(session, value);
+      keyboard.hide();
+      setResult(profile);
+    } catch (searchError) {
+      setError(toContactErrorMessage(searchError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="subpage-screen">
+      <SubpageHeader title="添加朋友" subtitle="通过邮箱或手机号查找" onBack={() => { keyboard.hide(); onBack(); }} />
+      <MobileScroll className="subpage-scroll">
+        <main className="subpage-content friend-search-content">
+          <form className="friend-search-form" onSubmit={submit}>
+            <label data-scroll-drag="ignore">
+              <MagnifyingGlassIcon />
+              <KeyboardInput
+                aria-label="搜索用户"
+                inputMode="email"
+                value={keyword}
+                onChange={(event) => {
+                  setKeyword(event.target.value);
+                  setError("");
+                }}
+                placeholder="邮箱或手机号"
+              />
+              {keyword ? <button type="button" onClick={() => { setKeyword(""); setResult(null); }} aria-label="清空"><Cross2Icon /></button> : null}
+            </label>
+            <button type="submit" className="search-submit" disabled={busy}>{busy ? "查找中" : "查找"}</button>
+          </form>
+
+          {demoModeEnabled ? (
+            <div className="demo-search-tip">
+              <InfoCircledIcon />
+              <span>演示账号：suwan@chatim.cn 或 18800001111</span>
+            </div>
+          ) : null}
+
+          {error ? <div className="search-feedback error" role="alert"><Cross2Icon /><span>{error}</span></div> : null}
+
+          {result ? (
+            <section className="search-result-card" aria-label="搜索结果">
+              <Avatar label={result.nickname.slice(0, 1)} tone={toneFromId(result.userId)} />
+              <div><strong>{result.nickname}</strong><small>{result.signature || result.email || result.phone || "ChatIM 用户"}</small></div>
+              <button type="button" onClick={() => onOpenProfile(result)}>查看资料</button>
+            </section>
+          ) : !error ? (
+            <section className="search-guide">
+              <span><PersonIcon /></span>
+              <h2>找到想联系的人</h2>
+              <p>搜索结果只显示必要的公开资料，发送申请前可以先确认对方身份。</p>
+            </section>
+          ) : null}
+        </main>
+      </MobileScroll>
+    </div>
+  );
+}
+
+function FriendProfileScreen({
+  session,
+  initialProfile,
+  shouldLoadDetail,
+  onBack,
+  onMessage,
+}: {
+  session: AuthSession;
+  initialProfile: FriendProfile;
+  shouldLoadDetail: boolean;
+  onBack: () => void;
+  onMessage: (profile: FriendProfile) => void;
+}) {
+  const keyboard = useKeyboard();
+  const [profile, setProfile] = useState(initialProfile);
+  const [loading, setLoading] = useState(shouldLoadDetail);
+  const [showApplication, setShowApplication] = useState(false);
+  const [applicationMessage, setApplicationMessage] = useState(`我是${session.nickname}`);
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState("");
+  const [sent, setSent] = useState(false);
+
+  useEffect(() => {
+    if (!shouldLoadDetail) return;
+    let active = true;
+    fetchFriendDetail(session, initialProfile.userId)
+      .then((detail) => {
+        if (active) setProfile(detail);
+      })
+      .catch((error) => {
+        if (active) setFeedback(toContactErrorMessage(error));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [initialProfile.userId, session, shouldLoadDetail]);
+
+  const submitApplication = async () => {
+    const message = applicationMessage.trim();
+    if (!message) {
+      setFeedback("请填写一句申请说明");
+      return;
+    }
+    setBusy(true);
+    setFeedback("");
+    try {
+      await sendFriendRequest(session, profile.userId, message);
+      keyboard.hide();
+      setSent(true);
+      setShowApplication(false);
+      setFeedback("好友申请已发送，对方通过后就可以聊天");
+    } catch (error) {
+      setFeedback(toContactErrorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const genderLabel = profile.gender === 0 ? "女" : profile.gender === 1 ? "男" : "未设置";
+
+  return (
+    <div className="subpage-screen">
+      <SubpageHeader title="个人资料" subtitle={profile.status === 0 ? "联系人" : "搜索结果"} onBack={() => { keyboard.hide(); onBack(); }} />
+      <MobileScroll className="subpage-scroll">
+        <main className="subpage-content friend-profile-content">
+          <section className="friend-profile-hero">
+            <Avatar label={profile.nickname.slice(0, 1)} tone={toneFromId(profile.userId)} online={profile.status === 0} />
+            <h1>{profile.nickname}</h1>
+            <p>{profile.signature || "这个人很安静，还没有留下签名。"}</p>
+            <span className={profile.status === 0 ? "friend-state connected" : "friend-state"}>
+              {profile.status === 0 ? "已是好友" : sent ? "等待对方通过" : "还不是好友"}
+            </span>
+          </section>
+
+          <section className="profile-detail-list">
+            <div><span>邮箱</span><strong>{profile.email || "未公开"}</strong></div>
+            <div><span>手机号</span><strong>{profile.phone ? `${profile.phone.slice(0, 3)}****${profile.phone.slice(-4)}` : "未公开"}</strong></div>
+            <div><span>性别</span><strong>{genderLabel}</strong></div>
+            <div><span>用户 ID</span><strong>{profile.userId}</strong></div>
+          </section>
+
+          {loading ? <p className="profile-loading"><span className="button-spinner" />正在同步资料</p> : null}
+          {feedback ? <p className={`profile-feedback ${sent ? "success" : ""}`} role="status">{feedback}</p> : null}
+
+          {showApplication ? (
+            <section className="application-compose">
+              <label htmlFor="friend-application-message">申请说明</label>
+              <div data-scroll-drag="ignore">
+                <KeyboardTextarea
+                  id="friend-application-message"
+                  aria-label="好友申请说明"
+                  maxLength={80}
+                  rows={3}
+                  value={applicationMessage}
+                  onChange={(event) => setApplicationMessage(event.target.value)}
+                  placeholder="告诉对方你是谁"
+                />
+                <small>{applicationMessage.length}/80</small>
+              </div>
+              <button type="button" className="primary-button" disabled={busy} onClick={() => void submitApplication()}>
+                {busy ? "正在发送" : "发送申请"}
+              </button>
+              <button type="button" className="plain-text-button" onClick={() => { keyboard.hide(); setShowApplication(false); }}>取消</button>
+            </section>
+          ) : profile.status === 0 ? (
+            <button type="button" className="primary-button profile-main-action" onClick={() => onMessage(profile)}>
+              <ChatBubbleIcon />发消息
+            </button>
+          ) : (
+            <button type="button" className="primary-button profile-main-action" disabled={sent} onClick={() => setShowApplication(true)}>
+              <PlusIcon />{sent ? "申请已发送" : "添加到联系人"}
+            </button>
+          )}
+        </main>
+      </MobileScroll>
+    </div>
+  );
+}
+
+function FriendApplicationsScreen({
+  session,
+  applications,
+  onApplicationsChange,
+  onBack,
+  onAccepted,
+  onMessage,
+}: {
+  session: AuthSession;
+  applications: FriendApplication[];
+  onApplicationsChange: (items: FriendApplication[]) => void;
+  onBack: () => void;
+  onAccepted: (application: FriendApplication, decision: ApplicationDecision | true) => void;
+  onMessage: (application: FriendApplication) => void;
+}) {
+  const [busyId, setBusyId] = useState("");
+  const [feedback, setFeedback] = useState("");
+  const unreadIds = applications.filter((item) => item.isReceiver === 1 && item.status === 0).map((item) => item.userId);
+
+  const markAllRead = async () => {
+    if (unreadIds.length === 0) return;
+    setBusyId("all");
+    setFeedback("");
+    try {
+      await updateFriendApplications(session, 3, unreadIds);
+      onApplicationsChange(applications.map((item) => item.status === 0 ? { ...item, status: 3 } : item));
+      setFeedback("未读申请已全部标记为已读");
+    } catch (error) {
+      setFeedback(toContactErrorMessage(error));
+    } finally {
+      setBusyId("");
+    }
+  };
+
+  const decide = async (application: FriendApplication, status: 1 | 2) => {
+    setBusyId(application.userId);
+    setFeedback("");
+    try {
+      const decision = await updateFriendApplications(session, status, [application.userId]);
+      onApplicationsChange(applications.map((item) =>
+        item.userId === application.userId ? { ...item, status } : item,
+      ));
+      if (status === 1) onAccepted(application, decision);
+      setFeedback(status === 1 ? `你和${application.nickname}已经成为好友` : `已拒绝${application.nickname}的申请`);
+    } catch (error) {
+      setFeedback(toContactErrorMessage(error));
+    } finally {
+      setBusyId("");
+    }
+  };
+
+  return (
+    <div className="subpage-screen">
+      <SubpageHeader
+        title="新的朋友"
+        subtitle={`${applications.length} 条申请`}
+        onBack={onBack}
+        action={<button type="button" disabled={unreadIds.length === 0 || busyId === "all"} onClick={() => void markAllRead()}>全部已读</button>}
+      />
+      <MobileScroll className="subpage-scroll">
+        <main className="subpage-content application-list-content">
+          {feedback ? <p className="application-feedback" role="status">{feedback}</p> : null}
+          {applications.length === 0 ? (
+            <section className="search-guide application-empty"><BellIcon /><h2>暂时没有新申请</h2><p>收到好友申请后会显示在这里。</p></section>
+          ) : applications.map((application) => {
+            const actionable = application.isReceiver === 1 && (application.status === 0 || application.status === 3);
+            const busy = busyId === application.userId;
+            return (
+              <article className={`application-card status-${application.status}`} key={`${application.userId}-${application.time}`}>
+                <div className="application-card-head">
+                  <Avatar label={application.nickname.slice(0, 1)} tone={toneFromId(application.userId)} />
+                  <div><strong>{application.nickname}</strong><small>{formatApplicationTime(application.time)}</small></div>
+                  <span className="application-status">{applicationStatusLabel(application.status)}</span>
+                </div>
+                <p>{application.msg || "请求添加你为好友"}</p>
+                {actionable ? (
+                  <div className="application-actions">
+                    <button type="button" className="reject" disabled={busy} onClick={() => void decide(application, 2)}>拒绝</button>
+                    <button type="button" className="accept" disabled={busy} onClick={() => void decide(application, 1)}>{busy ? "处理中" : "接受"}</button>
+                  </div>
+                ) : application.status === 1 ? (
+                  <button type="button" className="message-new-friend" onClick={() => onMessage(application)}><ChatBubbleIcon />发消息</button>
+                ) : application.status === 4 ? (
+                  <button type="button" className="message-new-friend muted" disabled>申请已过期</button>
+                ) : null}
+              </article>
+            );
+          })}
+        </main>
+      </MobileScroll>
+    </div>
+  );
+}
+
+function applicationStatusLabel(status: number) {
+  return status === 0 ? "新申请" : status === 1 ? "已通过" : status === 2 ? "已拒绝" : status === 3 ? "待处理" : "已过期";
+}
+
+function formatApplicationTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const today = new Date();
+  const sameDay = date.toDateString() === today.toDateString();
+  return new Intl.DateTimeFormat("zh-CN", sameDay
+    ? { hour: "2-digit", minute: "2-digit", hour12: false }
+    : { month: "numeric", day: "numeric" }).format(date);
 }
 
 function ChatScreen({
@@ -1191,6 +1710,8 @@ function ChatScreen({
 const DRAFT_STORAGE_PREFIX = "chatim.chat.drafts.v1";
 const CONVERSATION_STORAGE_PREFIX = "chatim.chat.conversations.v1";
 const MESSAGE_STORAGE_PREFIX = "chatim.chat.messages.v1";
+const CONTACT_STORAGE_PREFIX = "chatim.contacts.v1";
+const APPLICATION_STORAGE_PREFIX = "chatim.friend-applications.v1";
 
 function loadDrafts(userId: AuthSession["userId"]): Record<string, string> {
   try {
@@ -1237,6 +1758,39 @@ function saveChatState(
   window.localStorage.setItem(`${MESSAGE_STORAGE_PREFIX}.${userId}`, JSON.stringify(messages));
 }
 
+function loadContacts(userId: AuthSession["userId"]): Contact[] {
+  try {
+    const stored = JSON.parse(
+      window.localStorage.getItem(`${CONTACT_STORAGE_PREFIX}.${userId}`) || "null",
+    ) as Contact[] | null;
+    if (Array.isArray(stored)) return stored;
+  } catch {
+    // Fall through to the demo seed or an empty real cache.
+  }
+  return demoModeEnabled ? demoContacts : [];
+}
+
+function loadApplications(userId: AuthSession["userId"]): FriendApplication[] {
+  try {
+    const stored = JSON.parse(
+      window.localStorage.getItem(`${APPLICATION_STORAGE_PREFIX}.${userId}`) || "null",
+    ) as FriendApplication[] | null;
+    if (Array.isArray(stored)) return stored;
+  } catch {
+    // Fall through to the demo seed or an empty real cache.
+  }
+  return demoModeEnabled ? demoApplications : [];
+}
+
+function saveContactState(
+  userId: AuthSession["userId"],
+  contacts: Contact[],
+  applications: FriendApplication[],
+) {
+  window.localStorage.setItem(`${CONTACT_STORAGE_PREFIX}.${userId}`, JSON.stringify(contacts));
+  window.localStorage.setItem(`${APPLICATION_STORAGE_PREFIX}.${userId}`, JSON.stringify(applications));
+}
+
 function makeClientMessageId() {
   return typeof crypto.randomUUID === "function"
     ? `client-${crypto.randomUUID()}`
@@ -1250,4 +1804,9 @@ function formatClock(date: Date) {
 function toErrorMessage(error: unknown) {
   if (error instanceof AuthApiError || error instanceof Error) return error.message;
   return "操作没有完成，请稍后重试";
+}
+
+function toContactErrorMessage(error: unknown) {
+  if (error instanceof ContactApiError || error instanceof Error) return error.message;
+  return "联系人操作没有完成，请稍后重试";
 }

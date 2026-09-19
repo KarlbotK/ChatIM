@@ -46,6 +46,14 @@
 - iPhone and Pixel 10 screenshots were inspected for safe-area clearance, list density, bottom navigation, and profile layout.
 - One P1 keyboard-layout issue was found during the pass: the chat message viewport initially subtracted the keyboard height twice. It now leaves keyboard sizing to `MobileScroll`, and the corrected screenshot shows all messages above the composer.
 
+### Round 3: friend search and applications
+
+- Playwright verified the complete demo flow: open add-friend search, reject invalid input, find a user by email, inspect the profile, send a custom friend request, and show the success state.
+- The new-friends page was checked with unread, read, accepted, rejected, and expired states. Accepting a request adds the person to contacts and opens a new empty chat; rejecting a request removes its actions; marking all as read updates the badge.
+- A separate real-mode browser pass intercepted the backend routes and verified friend-list, application-list, unread-count, and user-search requests. Each authenticated request carried both `access-token` and `refresh-token` headers.
+- The final demo and real-mode passes reported no browser console errors or warnings.
+- Evidence screenshots: `output/playwright/friend-flow/friend-profile.png` and `output/playwright/friend-flow/friend-applications.png`.
+
 ## Comparison History
 
 1. Initial browser pass found a P2 layout issue: browser focus scrolling moved the framed device itself after authentication, which shifted the main page upward and left the simulated keyboard visible in the clipped frame.

@@ -7,7 +7,8 @@
 - 密码登录、验证码登录、注册、会话恢复和退出登录；
 - 会话列表、未读数、置顶/免打扰/草稿/失败等列表状态；
 - 会话搜索、聊天详情、文本发送与发送状态；
-- 联系人列表，以及从联系人发起新会话；
+- 联系人列表、好友搜索、好友资料和好友申请发送；
+- 新朋友申请列表、未读数、批量已读、接受/拒绝，以及通过后直接发起会话；
 - 发现页和个人中心的第一版信息架构；
 - 按账号保存草稿、最近会话和消息，刷新后可以恢复；
 - iPhone 和 Pixel 10 两种设备预览，以及键盘顶起和安全区适配。
@@ -37,9 +38,16 @@ $env:FRONTEND_ORIGIN="http://localhost:4173"
 - `POST /api/user/register`
 - `POST /api/user/refresh`
 - `GET /api/user/logout`
+- `GET /api/contact/{userId}/user/search`
+- `GET /api/contact/{userId}/friend`
+- `GET /api/contact/{userId}/friend/{friendId}`
+- `POST /api/contact/{userId}/friend/{receiverId}`
+- `GET /api/contact/{userId}/apply`
+- `GET /api/contact/{userId}/applyCount`
+- `POST /api/contact/{userId}/application/{status}`
 
 当前浏览器版本用 `localStorage` 模拟移动端安全存储。正式客户端接入时应将访问令牌和刷新令牌迁移到系统安全存储。
 
 ## 当前接口边界
 
-后端目前还没有公开的会话摘要接口和完整的 WebSocket 发送确认协议。真实模式不会填充演示联系人或会话；登录后会明确显示等待会话接口。`?demo=1` 中的聊天发送会模拟从 `sending` 到 `sent`，用于验证界面与交互，不代表服务端已经完成消息持久化确认。
+后端目前还没有公开的会话摘要接口和完整的 WebSocket 发送确认协议。真实模式会从联系人接口加载好友与申请，但不会填充演示会话；登录后会明确显示等待会话接口。`?demo=1` 中的聊天发送会模拟从 `sending` 到 `sent`，用于验证界面与交互，不代表服务端已经完成消息持久化确认。
