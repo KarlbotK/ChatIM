@@ -135,15 +135,13 @@ Access-Token: <accessToken>
 Refresh-Token: <refreshToken>
 ```
 
-当前 WebSocket 握手使用：
+移动端原生 WebSocket 握手使用：
 
 ```text
-Authorization: <accessToken>
+Authorization: Bearer <accessToken>
 ```
 
-当前 WebSocket 校验代码没有按 `Bearer xxx` 解析，而是直接把整个 Header 值当作 token，因此 App 第一版必须传纯 token。后续建议统一为 `Authorization: Bearer <token>`，并同步修改服务端。
-
-该握手方式用于能设置自定义 Header 的 Android/iOS 客户端。复用为浏览器 Web 端前，需要服务端另行提供兼容的握手鉴权协议，不能假设相同 Header 写法可直接复用。
+该握手方式用于能设置自定义 Header 的 Android/iOS 客户端，服务端暂时兼容旧版纯 token 写法。标准浏览器先用已登录 HTTP 请求调用 `POST /api/user/ws-ticket`，再把返回的一次性短期 ticket 放入 WebSocket 握手 URL；accessToken 和 refreshToken 不进入 URL。
 
 ### 4.3 通用响应格式
 
@@ -416,7 +414,8 @@ App 请求 uploadUrl
   -> 保存 accessToken
   -> 读取 login.data.nettyUri
   -> 按部署实际支持的协议补全 ws:// 或 wss://
-  -> Header: Authorization: accessToken
+  -> 移动端 Header: Authorization: Bearer accessToken
+  -> 浏览器 POST /api/user/ws-ticket 后携带一次性 ticket
   -> 连接 /ws/netty
   -> 服务端验证 JWT 和 Redis 中的 accessToken
   -> App 发送心跳
@@ -954,7 +953,7 @@ status: 0 | 1
 ## 15. 前端开始开发前必须确认的后端事项
 
 1. 确认 `nettyUri` 返回真实 WebSocket 端口；
-2. 第一版保留 Access-Token / Refresh-Token 与 WebSocket 纯 token Header；统一 Bearer 格式时双方同步迁移；
+2. HTTP 保留 Access-Token / Refresh-Token 兼容，WebSocket 移动端使用 Bearer Header，浏览器使用一次性短期 ticket；
 3. HTTP 操作者身份取自 JWT、WebSocket 发送者取自已鉴权 Channel，并校验会话权限；
 4. 增加会话摘要、会话详情和同步保障；服务端未读数启用前明确本地统计限制；
 5. V0.2 再补齐群成员、群头像、群设置和退出群聊接口；

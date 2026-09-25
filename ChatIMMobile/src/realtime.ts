@@ -40,6 +40,13 @@ type ApiResponse<T> = {
   message?: string;
 };
 
+type WebSocketTicketResponse = {
+  ticket: string;
+  nettyUri: string;
+  expiresInSeconds: number;
+  expiresAt: number;
+};
+
 type NativeSocketFactory = (url: string, headers: Record<string, string>) => WebSocket;
 
 declare global {
@@ -55,9 +62,14 @@ const PONG_TIMEOUT = 12_000;
 const RECONNECT_DELAYS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000];
 
 export class RealtimeApiError extends Error {
-  constructor(message: string) {
+  readonly code?: number;
+  readonly status?: number;
+
+  constructor(message: string, code?: number, status?: number) {
     super(message);
     this.name = "RealtimeApiError";
+    this.code = code;
+    this.status = status;
   }
 }
 
@@ -81,6 +93,7 @@ export class ChatRealtimeClient {
   private reconnectTimer: number | undefined;
   private heartbeatTimer: number | undefined;
   private pongTimer: number | undefined;
+  private connectionGeneration = 0;
 
   constructor(options: ClientOptions) {
     this.session = options.session;
@@ -90,8 +103,10 @@ export class ChatRealtimeClient {
   }
 
   connect() {
+    if (!this.stopped && this.isConnected()) return;
     this.stopped = false;
-    this.open(false);
+    const generation = ++this.connectionGeneration;
+    void this.open(false, generation);
   }
 
   isConnected() {
@@ -99,6 +114,7 @@ export class ChatRealtimeClient {
   }
 
   disconnect() {
+    this.connectionGeneration += 1;
     this.stopped = true;
     this.opening = false;
     this.opened = false;
@@ -109,6 +125,7 @@ export class ChatRealtimeClient {
   }
 
   reconnectNow() {
+    const generation = ++this.connectionGeneration;
     this.stopped = false;
     this.opened = false;
     this.opening = false;
@@ -117,7 +134,7 @@ export class ChatRealtimeClient {
     const socket = this.socket;
     this.socket = null;
     if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, "manual reconnect");
-    this.open(true);
+    void this.open(true, generation);
   }
 
   send(message: OutgoingRealtimeMessage) {
@@ -140,15 +157,16 @@ export class ChatRealtimeClient {
     return true;
   }
 
-  private open(reconnecting: boolean) {
+  private async open(reconnecting: boolean, generation: number) {
     if (this.stopped) return;
+    if (generation !== this.connectionGeneration) return;
     if (this.opening || this.opened || this.socket) return;
     this.opening = true;
     this.onState(reconnecting ? "reconnecting" : "connecting");
 
     if (demoModeEnabled) {
       window.setTimeout(() => {
-        if (this.stopped) return;
+        if (this.stopped || generation !== this.connectionGeneration) return;
         this.opening = false;
         this.opened = true;
         this.reconnectAttempt = 0;
@@ -158,17 +176,32 @@ export class ChatRealtimeClient {
       return;
     }
 
-    if (!this.session.nettyUri) {
+    if (window.chatIMCreateWebSocket && !this.session.nettyUri) {
       this.opening = false;
       this.onState("disconnected");
       return;
     }
 
     try {
-      const url = normalizeWebSocketUrl(this.session.nettyUri);
-      const socket = window.chatIMCreateWebSocket
-        ? window.chatIMCreateWebSocket(url, { Authorization: this.session.accessToken })
-        : new WebSocket(url);
+      let socket: WebSocket;
+      if (window.chatIMCreateWebSocket) {
+        const url = normalizeWebSocketUrl(this.session.nettyUri!);
+        socket = window.chatIMCreateWebSocket(url, {
+          Authorization: `Bearer ${this.session.accessToken}`,
+        });
+      } else {
+        const credentials = await requestWebSocketTicket(this.session);
+        if (this.stopped || generation !== this.connectionGeneration) return;
+        this.session.nettyUri = credentials.nettyUri;
+        const url = new URL(normalizeWebSocketUrl(credentials.nettyUri));
+        url.searchParams.set("ticket", credentials.ticket);
+        socket = new WebSocket(url.toString());
+      }
+
+      if (this.stopped || generation !== this.connectionGeneration) {
+        socket.close(1000, "connection replaced");
+        return;
+      }
       this.socket = socket;
       this.opened = false;
 
@@ -213,8 +246,13 @@ export class ChatRealtimeClient {
       socket.addEventListener("error", () => {
         if (socket === this.socket && socket.readyState < WebSocket.CLOSING) socket.close();
       });
-    } catch {
+    } catch (error) {
+      if (this.stopped || generation !== this.connectionGeneration) return;
       this.opening = false;
+      if (isAuthenticationError(error)) {
+        this.onState("auth-failed");
+        return;
+      }
       this.scheduleReconnect();
     }
   }
@@ -226,7 +264,8 @@ export class ChatRealtimeClient {
     this.onState("reconnecting");
     const delay = RECONNECT_DELAYS[Math.min(this.reconnectAttempt, RECONNECT_DELAYS.length - 1)];
     this.reconnectAttempt += 1;
-    this.reconnectTimer = window.setTimeout(() => this.open(true), delay);
+    const generation = this.connectionGeneration;
+    this.reconnectTimer = window.setTimeout(() => void this.open(true, generation), delay);
   }
 
   private startHeartbeat() {
@@ -314,7 +353,7 @@ async function request<T>(session: AuthSession, path: string, body: Record<strin
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
-        "Access-Token": session.accessToken,
+        Authorization: `Bearer ${session.accessToken}`,
         "Refresh-Token": session.refreshToken,
       },
       body: JSON.stringify(body),
@@ -322,7 +361,7 @@ async function request<T>(session: AuthSession, path: string, body: Record<strin
     });
     const payload = (await response.json().catch(() => null)) as ApiResponse<T> | null;
     if (!response.ok || !payload || payload.code !== 200) {
-      throw new RealtimeApiError(payload?.message || "消息同步暂时不可用");
+      throw new RealtimeApiError(payload?.message || "消息同步暂时不可用", payload?.code, response.status);
     }
     return payload.data;
   } catch (error) {
@@ -334,6 +373,40 @@ async function request<T>(session: AuthSession, path: string, body: Record<strin
   } finally {
     window.clearTimeout(timeout);
   }
+}
+
+async function requestWebSocketTicket(session: AuthSession) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 12_000);
+  try {
+    const response = await fetch(`${API_BASE}/api/user/ws-ticket`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${session.accessToken}`,
+        "Refresh-Token": session.refreshToken,
+      },
+      signal: controller.signal,
+    });
+    const payload = (await response.json().catch(() => null)) as ApiResponse<WebSocketTicketResponse> | null;
+    if (!response.ok || !payload || payload.code !== 200) {
+      throw new RealtimeApiError(payload?.message || "实时连接凭证获取失败", payload?.code, response.status);
+    }
+    return payload.data;
+  } catch (error) {
+    if (error instanceof RealtimeApiError) throw error;
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new RealtimeApiError("实时连接凭证获取超时");
+    }
+    throw new RealtimeApiError("暂时连接不上实时服务");
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+function isAuthenticationError(error: unknown) {
+  if (!(error instanceof RealtimeApiError)) return false;
+  return error.status === 401 || (error.code != null && error.code >= 40100 && error.code < 40200);
 }
 
 function delay(duration: number) {

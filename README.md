@@ -295,6 +295,7 @@ HTTP 请求通过 Gateway 的 `http://localhost:10010` 访问。
 | 群聊 | `/api/group/**` |
 | 离线与历史消息 | `/api/message/**` |
 | 红包 | `/api/chat/redPacket/**` |
+| 浏览器 WebSocket ticket | `POST /api/user/ws-ticket` |
 | WebSocket | `/ws/netty`，当前直连 RealTimeService |
 
 认证头沿用当前接口约定：
@@ -304,13 +305,13 @@ Access-Token: <accessToken>
 Refresh-Token: <refreshToken>
 ```
 
-当前 Netty WebSocket 握手使用：
+移动端原生 WebSocket 握手使用：
 
 ```text
-Authorization: <accessToken>
+Authorization: Bearer <accessToken>
 ```
 
-标准浏览器不能为原生 `WebSocket` 构造器设置 `Authorization` 请求头，因此浏览器真实模式暂时无法直接完成握手。移动端原生客户端可以设置该请求头；下一轮计划会统一 Bearer 格式，并决定是否增加浏览器短期 ticket。不要把长期 accessToken 放进 WebSocket URL。
+标准浏览器先通过已登录的 HTTP 请求调用 `POST /api/user/ws-ticket`，再使用返回的 `nettyUri?ticket=<一次性凭证>` 建立连接。ticket 最长有效 60 秒、仅可消费一次，并绑定当前 accessToken 和目标实时服务；长期 accessToken 和 refreshToken 不进入 WebSocket URL。服务端暂时兼容旧客户端的纯 token `Authorization` 写法。
 
 ## 消息链路
 
@@ -342,7 +343,6 @@ Authorization: <accessToken>
 - 当前离线补拉主要使用时间起点，可靠的服务端联合游标仍待实现。
 - 消息还没有区分 accepted 和 persisted 的正式 ACK。
 - `clientMessageId` 的服务端持久化幂等仍需补齐，结果未知时不能自动重发。
-- 标准浏览器无法直接满足当前 WebSocket Header 鉴权。
 - 群详情、成员分页、角色管理、退出和解散接口尚未完整实现。
 - 图片消息需要从长期下载 URL 调整为稳定对象标识。
 - 浏览器原型使用 `localStorage`，正式移动端必须迁移到系统安全存储和本地数据库。
@@ -371,15 +371,13 @@ Authorization: <accessToken>
 
 下一轮按以下顺序推进：
 
-1. WebSocket 鉴权方案定稿。
-2. 消息 accepted、persisted 和 failed ACK。
-3. `clientMessageId` 服务端幂等与结果查询。
-4. 服务端离线同步游标和 MySQL 回源。
-5. 会话摘要、已读位置和未读数。
-6. 群详情、成员和权限管理。
-7. 图片稳定对象标识与临时下载地址。
-8. 移动端安全存储。
-9. 消息手动重试和红包主流程。
+1. 消息 accepted、persisted 和 failed ACK。
+2. `clientMessageId` 服务端幂等与结果查询。
+3. 服务端离线同步游标和 MySQL 回源。
+4. 会话摘要、已读位置和未读数。
+5. 群详情、成员和权限管理。
+6. 图片稳定对象标识与临时下载地址。
+7. 移动端安全存储。
+8. 消息手动重试和红包主流程。
 
 完整范围和验收条件见 [NEXT_ROUND_PRODUCT_REQUIREMENTS.md](./NEXT_ROUND_PRODUCT_REQUIREMENTS.md)。
-

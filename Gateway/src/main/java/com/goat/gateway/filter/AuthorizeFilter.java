@@ -4,6 +4,7 @@ package com.goat.gateway.filter;
 import com.goat.common.common.ErrorCode;
 import com.goat.common.constant.CommonConstant;
 import com.goat.common.exception.BusinessException;
+import com.goat.common.utils.AuthTokenUtil;
 import com.goat.common.utils.JwtUtil;
 
 import io.jsonwebtoken.Claims;
@@ -51,8 +52,11 @@ public class AuthorizeFilter implements GlobalFilter, Ordered {
             return chain.filter(exchange);
         }
 
-        // 获取 Access-Token 和 Refresh-Token
-        String accessToken = request.getHeaders().getFirst("Access-Token");
+        // 优先使用标准 Bearer Header，并兼容已有 Access-Token Header。
+        String accessToken = AuthTokenUtil.extract(request.getHeaders().getFirst("Authorization"));
+        if (accessToken == null) {
+            accessToken = AuthTokenUtil.extract(request.getHeaders().getFirst("Access-Token"));
+        }
         String refreshToken = request.getHeaders().getFirst("Refresh-Token");
 
         try {

@@ -17,6 +17,10 @@ public class CommonConstant {
 
     public static final String REFRESH_TOKEN_PREFIX = "refresh:token:";
 
+    public static final String WEBSOCKET_TICKET_PREFIX = "ws:ticket:";
+
+    public static final long DEFAULT_WEBSOCKET_TICKET_TTL_SECONDS = 60L;
+
     public static final TimeUnit ACCESS_TOKEN_UNIT = TimeUnit.MINUTES; // 分钟
 
     public static final TimeUnit REFRESH_TOKEN_UNIT = TimeUnit.DAYS; // 天

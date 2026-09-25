@@ -11,6 +11,7 @@ import com.goat.userservice.model.entity.User;
 import com.goat.userservice.model.vo.LoginAndRegisterResponse;
 import com.goat.userservice.model.vo.TokenResponse;
 import com.goat.userservice.model.vo.UploadUrlResponse;
+import com.goat.userservice.model.vo.WebSocketTicketResponse;
 
 import java.util.List;
 import java.util.Map;
@@ -30,6 +31,7 @@ public interface UserService extends IService<User> {
     boolean logout(String userId);
     String refreshUri(Long userId);
     TokenResponse refreshToken(String refreshToken);
+    WebSocketTicketResponse createWebSocketTicket(String accessToken);
     UploadUrlResponse uploadUrl(String fileName) ;
     Boolean updateAvatar(UpdateAvatarRequest updateAvatarRequest);
     Map<Long, UserInfosResponse> getUserInfos(List<Long> userIds);

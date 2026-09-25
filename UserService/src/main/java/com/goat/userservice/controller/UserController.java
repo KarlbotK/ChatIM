@@ -3,6 +3,7 @@ package com.goat.userservice.controller;
 import com.goat.userservice.model.dto.request.UpdateAvatarRequest;
 import com.goat.userservice.model.vo.TokenResponse;
 import com.goat.userservice.model.vo.UploadUrlResponse;
+import com.goat.userservice.model.vo.WebSocketTicketResponse;
 import io.jsonwebtoken.Claims;
 import com.goat.common.common.BaseResponse;
 import com.goat.common.common.ErrorCode;
@@ -15,6 +16,7 @@ import com.goat.userservice.model.dto.request.UserRegisterRequest;
 import com.goat.userservice.model.vo.LoginAndRegisterResponse;
 import com.goat.userservice.service.UserService;
 import com.goat.common.utils.JwtUtil;
+import com.goat.common.utils.AuthTokenUtil;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Email;
@@ -55,7 +57,7 @@ public class UserController {
 
     @GetMapping("/logout")
     public BaseResponse<Boolean> logout(HttpServletRequest request) {
-        String accessToken = request.getHeader("Access-Token");
+        String accessToken = resolveAccessToken(request);
         Claims claims = JwtUtil.parse(accessToken);
         ThrowUtils.throwIf(claims == null, ErrorCode.NOT_LOGIN_ERROR);
         return ResultUtils.success(userService.logout(claims.getSubject()));
@@ -66,6 +68,13 @@ public class UserController {
         String refreshToken = request.getHeader("Refresh-Token");
         ThrowUtils.throwIf(StringUtils.isBlank(refreshToken), ErrorCode.PARAMS_ERROR);
         return ResultUtils.success(userService.refreshToken(refreshToken));
+    }
+
+    @PostMapping("/ws-ticket")
+    public BaseResponse<WebSocketTicketResponse> createWebSocketTicket(HttpServletRequest request) {
+        String accessToken = resolveAccessToken(request);
+        ThrowUtils.throwIf(StringUtils.isBlank(accessToken), ErrorCode.NOT_LOGIN_ERROR);
+        return ResultUtils.success(userService.createWebSocketTicket(accessToken));
     }
 
     @GetMapping("/refresh/uri")
@@ -81,6 +90,11 @@ public class UserController {
     @PostMapping("/update/avatar")
     public BaseResponse<Boolean> updateAvatar(@RequestBody UpdateAvatarRequest updateAvatarRequest)  {
         return ResultUtils.success(userService.updateAvatar(updateAvatarRequest));
+    }
+
+    private String resolveAccessToken(HttpServletRequest request) {
+        String token = AuthTokenUtil.extract(request.getHeader("Authorization"));
+        return token == null ? AuthTokenUtil.extract(request.getHeader("Access-Token")) : token;
     }
 
 }

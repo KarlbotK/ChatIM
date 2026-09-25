@@ -58,6 +58,9 @@ mybatis-plus:
 server:
   port: ${SERVER_PORT:8104}
 
+websocket:
+  ticket-ttl-seconds: ${WEBSOCKET_TICKET_TTL_SECONDS:60}
+
 minio:
   url: ${MINIO_URL:http://localhost:9000}
   access-key: ${MINIO_ACCESS_KEY:}

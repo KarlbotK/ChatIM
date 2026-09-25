@@ -62,4 +62,4 @@ $env:FRONTEND_ORIGIN="http://localhost:4173"
 
 后端目前还没有公开的会话摘要、群详情和群成员列表。前端会用 WebSocket 回推中的 `clientMessageId` 将本地消息更新为“已发送”，但这只代表消息已经进入后端推送链路，并不等同于持久化成功；超时没有收到回推时会显示“结果待确认”，不会自动重发。
 
-当前 Netty 握手只接受 `Authorization` 请求头，标准浏览器的 `WebSocket` API 无法设置这个头。浏览器真实模式会展示连接和重连状态，但要完整联调实时消息，需要由原生客户端通过 `window.chatIMCreateWebSocket(url, headers)` 注入带请求头的连接，或由后端提供不把令牌放进 URL 的浏览器兼容握手方案。离线和历史消息接口不受这个限制。
+移动端原生连接通过 `window.chatIMCreateWebSocket(url, headers)` 注入 `Authorization: Bearer <accessToken>`。标准浏览器会先调用 `POST /api/user/ws-ticket` 获取最长 60 秒、仅可使用一次的短期 ticket，再连接服务端返回的 `nettyUri`；长期令牌不会写入 WebSocket URL。离线和历史消息接口继续通过 Gateway 访问。

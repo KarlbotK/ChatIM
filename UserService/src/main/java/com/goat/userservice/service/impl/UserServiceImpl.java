@@ -18,8 +18,10 @@ import com.goat.userservice.mapper.UserMapper;
 import com.goat.userservice.model.vo.LoginAndRegisterResponse;
 import com.goat.userservice.model.vo.TokenResponse;
 import com.goat.userservice.model.vo.UploadUrlResponse;
+import com.goat.userservice.model.vo.WebSocketTicketResponse;
 import com.goat.userservice.service.UserService;
 import com.goat.userservice.utils.EmailUtil;
+import com.goat.common.utils.AuthTokenUtil;
 import com.goat.common.utils.JwtUtil;
 import com.goat.userservice.utils.OssUtils;
 import com.goat.userservice.utils.RandomCodeUtil;
@@ -31,11 +33,14 @@ import io.micrometer.common.util.StringUtils;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.util.DigestUtils;
 
 
+import java.security.SecureRandom;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -51,6 +56,8 @@ import java.util.concurrent.TimeUnit;
 public class UserServiceImpl extends ServiceImpl<UserMapper, User>
     implements UserService{
 
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
+
     @Autowired
     private EmailUtil emailUtil;
 
@@ -59,6 +66,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>
 
     @Autowired
     private NettyServiceLocator serviceInstanceUtil;
+
+    @Value("${websocket.ticket-ttl-seconds:60}")
+    private long webSocketTicketTtlSeconds;
 
     @Override
     public void sendCaptcha(String targetEmail) {
@@ -209,6 +219,47 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>
         stringRedisTemplate.opsForValue().set(CommonConstant.ACCESS_TOKEN_PREFIX + userId, newAccessToken, CommonConstant.ACCESS_TOKEN_EXPIRE_TIME, CommonConstant.ACCESS_TOKEN_UNIT);
         stringRedisTemplate.opsForValue().set(CommonConstant.REFRESH_TOKEN_PREFIX + userId, newRefreshToken, CommonConstant.REFRESH_TOKEN_EXPIRE_TIME, CommonConstant.REFRESH_TOKEN_UNIT);
         return TokenResponse.builder().accessToken(newAccessToken).refreshToken(newRefreshToken).build();
+    }
+
+    @Override
+    public WebSocketTicketResponse createWebSocketTicket(String accessToken) {
+        String token = AuthTokenUtil.extract(accessToken);
+        Claims claims = JwtUtil.parse(token);
+        ThrowUtils.throwIf(claims == null || StringUtils.isBlank(claims.getSubject()), ErrorCode.TOKEN_INVALID);
+
+        String userId = claims.getSubject();
+        String storedToken = stringRedisTemplate.opsForValue()
+                .get(CommonConstant.ACCESS_TOKEN_PREFIX + userId);
+        ThrowUtils.throwIf(!token.equals(storedToken), ErrorCode.TOKEN_INVALID);
+
+        String nettyUri = serviceInstanceUtil.getServiceInstance(userId);
+        ThrowUtils.throwIf(StringUtils.isBlank(nettyUri), ErrorCode.SYSTEM_BUSY, "实时连接服务暂时不可用");
+
+        byte[] randomBytes = new byte[32];
+        SECURE_RANDOM.nextBytes(randomBytes);
+        String ticket = Base64.getUrlEncoder().withoutPadding().encodeToString(randomBytes);
+        long ttlSeconds = Math.max(1L, Math.min(
+                webSocketTicketTtlSeconds,
+                CommonConstant.DEFAULT_WEBSOCKET_TICKET_TTL_SECONDS
+        ));
+        String ticketValue = String.join("|",
+                userId,
+                AuthTokenUtil.fingerprint(token),
+                AuthTokenUtil.webSocketTargetFingerprint(nettyUri)
+        );
+        stringRedisTemplate.opsForValue().set(
+                CommonConstant.WEBSOCKET_TICKET_PREFIX + ticket,
+                ticketValue,
+                ttlSeconds,
+                TimeUnit.SECONDS
+        );
+
+        return WebSocketTicketResponse.builder()
+                .ticket(ticket)
+                .nettyUri(nettyUri)
+                .expiresInSeconds(ttlSeconds)
+                .expiresAt(System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(ttlSeconds))
+                .build();
     }
 
     @Override
