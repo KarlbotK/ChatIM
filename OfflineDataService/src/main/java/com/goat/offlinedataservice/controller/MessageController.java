@@ -15,6 +15,8 @@ import com.goat.common.utils.AuthTokenUtil;
 import com.goat.common.utils.JwtUtil;
 import com.goat.offlinedataservice.model.dto.HistoryMessageRequest;
 import com.goat.offlinedataservice.model.dto.OfflineMessageRequest;
+import com.goat.offlinedataservice.model.dto.OfflineSyncRequest;
+import com.goat.offlinedataservice.model.vo.OfflineSyncResponse;
 
 import com.goat.offlinedataservice.service.MessageService;
 import jakarta.annotation.Resource;
@@ -41,8 +43,18 @@ public class MessageController {
      */
     @PostMapping("/offline")
     public BaseResponse<Map<Long, List<MessageResponse>>> getOfflineMessages(
-            @RequestBody OfflineMessageRequest request) {
+            @RequestBody OfflineMessageRequest request,
+            HttpServletRequest servletRequest) {
+        request.setUserId(resolveAuthenticatedUserId(servletRequest));
         return ResultUtils.success(messageService.getOfflineMessages(request));
+    }
+
+    @PostMapping("/offline/sync")
+    public BaseResponse<OfflineSyncResponse> syncOfflineMessages(
+            @RequestBody OfflineSyncRequest request,
+            HttpServletRequest servletRequest) {
+        Long userId = resolveAuthenticatedUserId(servletRequest);
+        return ResultUtils.success(messageService.syncOfflineMessages(userId, request));
     }
 
     /**

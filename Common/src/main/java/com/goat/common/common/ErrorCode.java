@@ -42,7 +42,8 @@ public enum ErrorCode {
     USER_EMAIL_LIST_EMPTY(90004, "用户邮箱列表为空，请检查用户服务是否正常或没有用户注册"),
     MESSAGE_NOT_IN_SESSION(90005, "您不属于该会话"),
     MESSAGE_PERSIST_FAILED(90006, "消息保存失败"),
-    MESSAGE_CLIENT_ID_REQUIRED(90007, "消息缺少客户端唯一标识");
+    MESSAGE_CLIENT_ID_REQUIRED(90007, "消息缺少客户端唯一标识"),
+    SYNC_CURSOR_INVALID(90008, "同步游标无效或已过期");
 
     /**
      * 状态码

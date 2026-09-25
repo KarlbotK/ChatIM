@@ -53,7 +53,7 @@ $env:FRONTEND_ORIGIN="http://localhost:4173"
 - `POST /api/group/invite`
 - `GET /api/user/uploadUrl?fileName=`，随后直接 `PUT` 到 MinIO 预签名地址
 - `WS /ws/netty`，文本心跳与消息收发
-- `POST /api/message/offline`
+- `POST /api/message/offline/sync`
 - `POST /api/message/history`
 - `GET /api/message/status?clientMessageId=`
 
@@ -62,5 +62,7 @@ $env:FRONTEND_ORIGIN="http://localhost:4173"
 ## 当前接口边界
 
 后端目前还没有公开的会话摘要、群详情和群成员列表。消息发送会分别收到 `accepted`、`persisted` 或 `failed` ACK，前端只在 `persisted` 后显示“已发送”；ACK 超时后会查询 `/api/message/status`，无法确认时显示“结果待确认”，不会自动重复发送。
+
+WebSocket 建连后，客户端通过 `/api/message/offline/sync` 循环拉取 MySQL 中的完整消息，每页合并成功后保存当前账号专属的服务端游标，直到 `hasMore` 为 false。
 
 移动端原生连接通过 `window.chatIMCreateWebSocket(url, headers)` 注入 `Authorization: Bearer <accessToken>`。标准浏览器会先调用 `POST /api/user/ws-ticket` 获取最长 60 秒、仅可使用一次的短期 ticket，再连接服务端返回的 `nettyUri`；长期令牌不会写入 WebSocket URL。离线和历史消息接口继续通过 Gateway 访问。

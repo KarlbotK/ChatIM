@@ -8,7 +8,9 @@ import com.goat.common.model.vo.MessageDeliveryRecord;
 import com.goat.offlinedataservice.model.dto.HistoryMessageRequest;
 import com.goat.offlinedataservice.model.dto.MessagePersistResult;
 import com.goat.offlinedataservice.model.dto.OfflineMessageRequest;
+import com.goat.offlinedataservice.model.dto.OfflineSyncRequest;
 import com.goat.offlinedataservice.model.entity.Message;
+import com.goat.offlinedataservice.model.vo.OfflineSyncResponse;
 
 import java.util.List;
 import java.util.Map;
@@ -18,6 +20,8 @@ public interface MessageService extends IService<Message> {
     MessagePersistResult saveMessageToMySQL(MessageRequest messageRequest);
 
     MessageDeliveryRecord getMessageStatus(Long senderId, String clientMessageId);
+
+    OfflineSyncResponse syncOfflineMessages(Long userId, OfflineSyncRequest request);
 
     Map<Long, List<MessageResponse>> getOfflineMessages(OfflineMessageRequest request);
 

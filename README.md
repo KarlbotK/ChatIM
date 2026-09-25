@@ -140,6 +140,11 @@ flowchart LR
 
 仓库目前没有 Docker Compose 和完整的基线建表脚本。启动真实服务前，需要先准备 `InfiniteChat` 数据库及项目所需表结构，并按顺序执行 `database/migrations` 下的增量脚本。不要在未确认数据结构的情况下直接连接生产数据库。
 
+当前版本部署前必须确认以下迁移已经执行：
+
+1. `20260926_message_delivery_idempotency.sql`：增加 `client_message_id` 及发送者幂等唯一索引；
+2. `20260926_message_sync_cursor.sql`：增加离线同步所需的会话联合游标索引。
+
 ## 配置
 
 各服务的 `src/main/resources/application.example.yml` 是可公开的配置参考。推荐通过环境变量注入真实配置，不要把密码、访问密钥或邮件授权码提交到仓库。
@@ -333,17 +338,18 @@ Authorization: Bearer <accessToken>
 客户端需要同时处理：
 
 - WebSocket 实时消息；
-- `/api/message/offline` 离线消息；
+- `/api/message/offline/sync` 游标分页离线同步；
 - `/api/message/history` 历史消息；
 - 使用 `messageId` 去重；
 - 使用 `clientMessageId` 归并本地待发送消息。
 
 发送者收到 `accepted` 时消息仍显示“发送中”，收到 `persisted` 后才显示“已发送”。ACK 丢失或超时时，客户端通过 `/api/message/status` 查询 `accepted`、`persisted`、`failed` 或 `notFound`，不会把普通实时回推误认为落库成功。
 
+离线同步使用服务端签名且绑定账号的联合游标，以 `createdTime + messageId` 稳定翻页。MySQL 是完整数据源，客户端每页合并成功后才保存 `nextCursor`，Redis 热数据缺失不会造成同步遗漏。
+
 ## 当前限制
 
 - 后端尚无完整的会话摘要聚合接口，跨设备恢复会话列表仍有限制。
-- 当前离线补拉主要使用时间起点，可靠的服务端联合游标仍待实现。
 - 群详情、成员分页、角色管理、退出和解散接口尚未完整实现。
 - 图片消息需要从长期下载 URL 调整为稳定对象标识。
 - 浏览器原型使用 `localStorage`，正式移动端必须迁移到系统安全存储和本地数据库。
@@ -372,11 +378,10 @@ Authorization: Bearer <accessToken>
 
 下一轮按以下顺序推进：
 
-1. 服务端离线同步游标和 MySQL 回源。
-2. 会话摘要、已读位置和未读数。
-3. 群详情、成员和权限管理。
-4. 图片稳定对象标识与临时下载地址。
-5. 移动端安全存储。
-6. 消息手动重试和红包主流程。
+1. 会话摘要、已读位置和未读数。
+2. 群详情、成员和权限管理。
+3. 图片稳定对象标识与临时下载地址。
+4. 移动端安全存储。
+5. 消息手动重试和红包主流程。
 
 完整范围和验收条件见 [NEXT_ROUND_PRODUCT_REQUIREMENTS.md](./NEXT_ROUND_PRODUCT_REQUIREMENTS.md)。

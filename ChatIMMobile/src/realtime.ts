@@ -63,6 +63,13 @@ type WebSocketTicketResponse = {
   expiresAt: number;
 };
 
+export type OfflineSyncResponse = {
+  items: RealtimeMessage[];
+  nextCursor?: string | null;
+  hasMore: boolean;
+  serverTime: number;
+};
+
 type NativeSocketFactory = (url: string, headers: Record<string, string>) => WebSocket;
 
 declare global {
@@ -72,7 +79,7 @@ declare global {
 }
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "http://localhost:10010").replace(/\/$/, "");
-const OFFLINE_CURSOR_PREFIX = "chatim.realtime.offline-cursor.v1";
+const OFFLINE_CURSOR_PREFIX = "chatim.realtime.offline-cursor.v2";
 const HEARTBEAT_INTERVAL = 20_000;
 const PONG_TIMEOUT = 12_000;
 const RECONNECT_DELAYS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000];
@@ -329,25 +336,31 @@ export class ChatRealtimeClient {
   }
 }
 
-export function resolveOfflineStart(session: AuthSession, fallback: number) {
-  const localCursor = readOfflineCursor(session.userId);
-  if (localCursor > 0) return localCursor;
-  const serverOfflineTime = Number(session.offlineTime);
-  return Number.isFinite(serverOfflineTime) && serverOfflineTime > 0 ? serverOfflineTime : fallback;
+export function loadOfflineCursor(userId: AuthSession["userId"]) {
+  return window.localStorage.getItem(`${OFFLINE_CURSOR_PREFIX}.${userId}`);
 }
 
-export function saveOfflineCursor(userId: AuthSession["userId"], value: number) {
-  window.localStorage.setItem(`${OFFLINE_CURSOR_PREFIX}.${userId}`, String(value));
+export function saveOfflineCursor(userId: AuthSession["userId"], cursor: string) {
+  window.localStorage.setItem(`${OFFLINE_CURSOR_PREFIX}.${userId}`, cursor);
 }
 
-export async function fetchOfflineMessages(session: AuthSession, offlineTime: number) {
+export function clearOfflineCursor(userId: AuthSession["userId"]) {
+  window.localStorage.removeItem(`${OFFLINE_CURSOR_PREFIX}.${userId}`);
+}
+
+export async function syncOfflineMessages(session: AuthSession, cursor: string | null, limit = 50) {
   if (demoModeEnabled) {
     await delay(300);
-    return {} as Record<string, RealtimeMessage[]>;
+    return {
+      items: [],
+      nextCursor: cursor,
+      hasMore: false,
+      serverTime: Date.now(),
+    } satisfies OfflineSyncResponse;
   }
-  return request<Record<string, RealtimeMessage[]>>(session, "/api/message/offline", {
-    userId: session.userId,
-    offlineTime,
+  return request<OfflineSyncResponse>(session, "/api/message/offline/sync", {
+    cursor,
+    limit,
   });
 }
 
@@ -372,11 +385,6 @@ export async function fetchMessageStatus(session: AuthSession, clientMessageId: 
   }
   const params = new URLSearchParams({ clientMessageId });
   return requestGet<MessageStatusResult>(session, `/api/message/status?${params.toString()}`);
-}
-
-function readOfflineCursor(userId: AuthSession["userId"]) {
-  const parsed = Number(window.localStorage.getItem(`${OFFLINE_CURSOR_PREFIX}.${userId}`));
-  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function normalizeWebSocketUrl(raw: string) {

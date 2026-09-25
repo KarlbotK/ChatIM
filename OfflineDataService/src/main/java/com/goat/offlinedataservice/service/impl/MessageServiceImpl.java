@@ -19,8 +19,11 @@ import com.goat.offlinedataservice.mapper.MessageMapper;
 import com.goat.offlinedataservice.model.dto.HistoryMessageRequest;
 import com.goat.offlinedataservice.model.dto.MessagePersistResult;
 import com.goat.offlinedataservice.model.dto.OfflineMessageRequest;
+import com.goat.offlinedataservice.model.dto.OfflineSyncRequest;
 import com.goat.offlinedataservice.model.entity.Message;
+import com.goat.offlinedataservice.model.vo.OfflineSyncResponse;
 import com.goat.offlinedataservice.service.MessageService;
+import com.goat.offlinedataservice.utils.OfflineCursorCodec;
 
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -72,6 +75,62 @@ public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message>
 
     @Resource
     private UserServiceClient userServiceClient;
+
+    @Resource
+    private OfflineCursorCodec offlineCursorCodec;
+
+    @Override
+    public OfflineSyncResponse syncOfflineMessages(Long userId, OfflineSyncRequest request) {
+        int requestedLimit = request.getLimit() == null ? CommonConstant.DEFAULT_LIMIT : request.getLimit();
+        int limit = Math.max(1, Math.min(requestedLimit, 100));
+        OfflineCursorCodec.OfflineCursor cursor = offlineCursorCodec.decode(request.getCursor(), userId);
+        List<Long> sessionIds = userServiceClient.getSessionIdsByUserId(userId);
+        if (sessionIds == null || sessionIds.isEmpty()) {
+            return OfflineSyncResponse.builder()
+                    .items(Collections.emptyList())
+                    .nextCursor(request.getCursor())
+                    .hasMore(false)
+                    .serverTime(System.currentTimeMillis())
+                    .build();
+        }
+
+        QueryWrapper<Message> queryWrapper = new QueryWrapper<>();
+        queryWrapper.in("session_id", sessionIds);
+        if (cursor.createdTime() > 0 || cursor.messageId() > 0) {
+            Date cursorTime = new Date(cursor.createdTime());
+            queryWrapper.and(wrapper -> wrapper
+                    .gt("created_time", cursorTime)
+                    .or()
+                    .eq("created_time", cursorTime)
+                    .gt("message_id", cursor.messageId()));
+        }
+        queryWrapper.orderByAsc("created_time")
+                .orderByAsc("message_id")
+                .last("LIMIT " + (limit + 1));
+
+        List<Message> rows = messageMapper.selectList(queryWrapper);
+        boolean hasMore = rows.size() > limit;
+        if (hasMore) {
+            rows = new ArrayList<>(rows.subList(0, limit));
+        }
+        List<MessageResponse> items = convertToResponses(rows);
+        String nextCursor = request.getCursor();
+        if (!rows.isEmpty()) {
+            Message last = rows.get(rows.size() - 1);
+            nextCursor = offlineCursorCodec.encode(
+                    userId,
+                    last.getCreatedTime().getTime(),
+                    last.getMessageId()
+            );
+        }
+
+        return OfflineSyncResponse.builder()
+                .items(items)
+                .nextCursor(nextCursor)
+                .hasMore(hasMore)
+                .serverTime(System.currentTimeMillis())
+                .build();
+    }
 
     @Override
     public MessageDeliveryRecord getMessageStatus(Long senderId, String clientMessageId) {

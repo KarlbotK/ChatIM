@@ -253,8 +253,8 @@ App 登录后进入四个主 Tab：
 
 1. 安全存储 accessToken 和 refreshToken；
 2. 保存当前用户资料；
-3. 持久化登录返回的 `offlineTime`，根据 `nettyUri` 建立 WebSocket 并接收实时消息；
-4. 从保存的离线时间或本地同步进度补拉，与实时消息按 messageId 合并；
+3. 加载当前账号保存的服务端离线游标，根据 `nettyUri` 建立 WebSocket 并接收实时消息；`offlineTime` 仅作为旧接口兼容字段；
+4. 使用服务端游标分页补拉，与实时消息按 messageId 合并；
 5. 进入会话列表并显示同步状态；补拉失败保留起点，不能直接标记同步完成。
 
 当前账号接口的问题：
@@ -343,20 +343,22 @@ App 请求 uploadUrl
 
 | 方法 | 地址 | 页面用途 | 请求体 | 结果 |
 |---|---|---|---|---|
-| POST | `/api/message/offline` | WebSocket 重连后补拉离线消息 | userId、offlineTime | Map<sessionId, List<MessageResponse>> |
+| POST | `/api/message/offline/sync` | WebSocket 重连后分页同步消息 | cursor、limit；首次 cursor 可空 | items、nextCursor、hasMore、serverTime |
+| POST | `/api/message/offline` | 旧版兼容接口，操作者由 JWT 确定 | offlineTime；请求体 userId 会被覆盖 | Map<sessionId, List<MessageResponse>> |
 | POST | `/api/message/history` | 聊天页向上翻历史消息 | sessionId、beforeTime、limit | 消息列表 |
 
 离线消息流程：
 
-1. 保存登录返回的 `offlineTime`；该值在服务端登录时被读取并删除，普通 WebSocket 重连不会重新返回；
-2. 先建立 WebSocket，再从保存的起点请求 `/offline`；普通重连使用本地同步进度并保留重叠区间；
-3. 按 sessionId 分发到本地各会话；
-4. 消息按 `createdTime` 升序合并；
-5. 服务端消息按 `messageId` 去重；实时回推有 clientMessageId 时，可关联本地待发送消息；
-6. 补拉结束后再将会话标记为已同步；
-7. WebSocket 后续收到的消息按时间和 ID 再次去重。
+1. 加载按账号隔离保存的服务端不透明游标；首次同步游标为空；
+2. 先建立 WebSocket，再请求 `/offline/sync`；
+3. 将 `items` 按会话分发并以 `createdTime + messageId` 排序合并；
+4. 服务端消息按 `messageId` 去重；实时回推有 clientMessageId 时，关联本地待发送消息；
+5. 整页成功合并并持久化后，才保存 `nextCursor`；
+6. `hasMore` 为 true 时继续请求下一页，否则将会话标记为已同步；
+7. 服务端判定本地游标无效时，清除该账号游标并从空游标重新同步一次；
+8. WebSocket 后续收到的消息按时间和 ID 再次去重。
 
-当前补拉有实现边界：近 7 天主要读 Canal 异步写入的 Redis，热数据缺失时没有完整 MySQL 回源；只补拉一次或只按最后接收时间推进游标可能漏掉延迟、乱序消息。后端需补齐可靠同步游标/回源保障，前端在此之前保留补拉重试能力，不能承诺绝不丢消息。`/offline` 只返回聊天消息；系统通知目前没有存储消费与历史查询闭环，重连先刷新好友申请等业务列表。
+离线同步以 MySQL 为完整数据源，不依赖 Redis 热数据是否存在。游标由服务端签名、绑定当前账号，并以 `createdTime + messageId` 保证同一毫秒内稳定翻页。聊天消息的可靠补拉已经形成闭环；系统通知目前仍没有存储消费与历史查询闭环，重连后需刷新好友申请等业务列表。
 
 历史消息采用游标式交互：
 
@@ -859,8 +861,8 @@ status: 0 | 1
 
 1. 用户使用密码或验证码登录；
 2. App 保存双 token；
-3. 持久化登录返回的 offlineTime；
-4. App 先连接 WebSocket，再按保存起点补拉并合并消息；
+3. 加载当前账号保存的服务端离线游标；
+4. App 先连接 WebSocket，再按游标分页补拉并合并消息，每页成功后推进游标；
 5. 进入会话列表并展示同步状态，失败不丢弃补拉起点；
 6. 断网后自动重连；
 7. Access-Token 过期时刷新并重新连接；
@@ -872,9 +874,9 @@ status: 0 | 1
 2. 客户端生成 clientMessageId；
 3. 消息立即显示为 sending；
 4. 通过 WebSocket 发送；
-5. 收到实时回推后变为 sent；可靠持久化状态需等待后端 ack 协议补齐；
+5. 收到 `persisted` ACK 后变为 sent；
 6. 超时显示结果待确认，确定失败后按错误反馈；
-7. 后端持久化幂等完成后验证“重试不得产生两条相同消息”；此前不自动重发；
+7. 通过“已认证发送者 + clientMessageId”幂等验证重试不会产生重复消息；
 8. 对方离线时，对方上线后能在离线消息中看到。
 
 ### 13.3 好友申请
@@ -962,7 +964,7 @@ status: 0 | 1
 6. 普通消息持久化幂等、WebSocket 发送确认和超时结果查询已完成，仍需补齐已读接口；
 7. 确认图片对象的公开访问策略，生产环境不要把 localhost 地址写入数据库；
 8. 按当前方案使用 RealTimeService 消费后查询 Redis 路由并转发；前端只依赖稳定的 `nettyUri` 和重连/离线补拉协议，暂不增加 PushRouter；
-9. 明确消息重复、重试和离线补拉的幂等规则；
+9. 消息重复、重试和离线补拉的幂等规则已明确，后续公开接口沿用同一身份与游标约束；
 10. 为所有公开接口补充统一错误码和接口文档。
 
 ## 16. 第一轮前端交付标准

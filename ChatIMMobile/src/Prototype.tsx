@@ -85,11 +85,13 @@ import {
 import {
   ChatRealtimeClient,
   RealtimeApiError,
+  clearOfflineCursor,
   fetchHistoryMessages,
   fetchMessageStatus,
-  fetchOfflineMessages,
-  resolveOfflineStart,
+  loadOfflineCursor,
   saveOfflineCursor,
+  syncOfflineMessages,
+  type OfflineSyncResponse,
   type OutgoingRealtimeMessage,
   type RealtimeConnectionState,
   type RealtimeMessage,
@@ -719,10 +721,11 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
   const [syncState, setSyncState] = useState<"idle" | "syncing" | "synced" | "failed">("idle");
   const [lastSyncTime, setLastSyncTime] = useState("");
   const realtimeRef = useRef<ChatRealtimeClient | null>(null);
+  const conversationsRef = useRef(conversations);
   const messagesRef = useRef(messages);
   const syncOfflineRef = useRef<(() => Promise<void>) | null>(null);
   const activeConversationIdRef = useRef<string | null>(null);
-  const offlineStartRef = useRef(resolveOfflineStart(session, Date.now()));
+  const offlineCursorRef = useRef<string | null>(loadOfflineCursor(session.userId));
   const seenServerKeysRef = useRef<Set<string> | null>(null);
   const applyServerMessagesRef = useRef<(
     incoming: RealtimeMessage[],
@@ -731,6 +734,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
   ) => number>(() => 0);
 
   if (!seenServerKeysRef.current) seenServerKeysRef.current = collectServerMessageKeys(messages);
+  conversationsRef.current = conversations;
   messagesRef.current = messages;
   activeConversationIdRef.current = activeConversationId;
 
@@ -772,87 +776,87 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
 
     if (accepted.length === 0) return 0;
 
-    setMessages((current) => {
-      const next = { ...current };
-      accepted.forEach((message) => {
-        const sessionId = String(message.sessionId);
-        const existing = [...(next[sessionId] ?? [])];
-        const converted = toChatMessage(message, session.userId);
-        if (!confirmed && converted.mine) converted.status = "sending";
-        const matchIndex = message.clientMessageId
-          ? existing.findIndex((item) => item.clientMessageId === message.clientMessageId || item.id === message.clientMessageId)
-          : -1;
-        if (matchIndex >= 0) {
-          const local = existing[matchIndex];
-          existing[matchIndex] = {
-            ...local,
-            ...converted,
-            imageName: local.imageName || converted.imageName,
-            imageWidth: local.imageWidth,
-            imageHeight: local.imageHeight,
-            imageSize: local.imageSize,
-            uploadProgress: undefined,
-            status: confirmed ? "sent" : local.status,
-          };
-        } else {
-          existing.push(converted);
-        }
-        next[sessionId] = existing.sort(compareChatMessages);
-      });
-      return next;
+    const nextMessages = { ...messagesRef.current };
+    accepted.forEach((message) => {
+      const sessionId = String(message.sessionId);
+      const existing = [...(nextMessages[sessionId] ?? [])];
+      const converted = toChatMessage(message, session.userId);
+      if (!confirmed && converted.mine) converted.status = "sending";
+      const matchIndex = message.clientMessageId
+        ? existing.findIndex((item) => item.clientMessageId === message.clientMessageId || item.id === message.clientMessageId)
+        : -1;
+      if (matchIndex >= 0) {
+        const local = existing[matchIndex];
+        existing[matchIndex] = {
+          ...local,
+          ...converted,
+          imageName: local.imageName || converted.imageName,
+          imageWidth: local.imageWidth,
+          imageHeight: local.imageHeight,
+          imageSize: local.imageSize,
+          uploadProgress: undefined,
+          status: confirmed ? "sent" : local.status,
+        };
+      } else {
+        existing.push(converted);
+      }
+      nextMessages[sessionId] = existing.sort(compareChatMessages);
     });
+    messagesRef.current = nextMessages;
+    setMessages(nextMessages);
 
+    let nextConversations = conversationsRef.current;
     if (!history) {
-      setConversations((current) => {
-        let next = [...current];
-        const grouped = new Map<string, RealtimeMessage[]>();
-        accepted.forEach((message) => {
-          const key = String(message.sessionId);
-          grouped.set(key, [...(grouped.get(key) ?? []), message]);
-        });
-        grouped.forEach((batch, sessionId) => {
-          const latest = batch[batch.length - 1];
-          const incomingCount = batch.filter((message) => String(message.senderId) !== String(session.userId)).length;
-          const currentIndex = next.findIndex((item) => item.id === sessionId);
-          const preview = realtimePreview(latest);
-          const active = activeConversationIdRef.current === sessionId;
-          if (currentIndex >= 0) {
-            const existing = next[currentIndex];
-            const updated: Conversation = {
-              ...existing,
-              preview,
-              time: formatConversationTime(latest.createdTime),
-              unread: active ? 0 : existing.unread + incomingCount,
-              failed: false,
-            };
-            next.splice(currentIndex, 1);
-            next.unshift(updated);
-          } else {
-            const contact = contacts.find((item) => item.conversationId === sessionId);
-            const group = groups.find((item) => item.sessionId === sessionId);
-            const name = group?.name
-              || contact?.name
-              || (latest.sessionType === 1 ? "新群聊" : latest.nickname || "新消息");
-            next.unshift({
-              id: sessionId,
-              name,
-              avatar: group?.avatar || contact?.avatar || name.slice(0, 1),
-              avatarTone: contact?.avatarTone || toneFromId(sessionId),
-              preview,
-              time: formatConversationTime(latest.createdTime),
-              unread: active ? 0 : incomingCount,
-              presence: contact?.presence,
-              peerId: contact?.id || (latest.sessionType === 0 && String(latest.senderId) !== String(session.userId)
-                ? String(latest.senderId)
-                : undefined),
-              group: latest.sessionType === 1,
-              membersCount: group?.members.length,
-            });
-          }
-        });
-        return next;
+      nextConversations = [...conversationsRef.current];
+      const grouped = new Map<string, RealtimeMessage[]>();
+      accepted.forEach((message) => {
+        const key = String(message.sessionId);
+        grouped.set(key, [...(grouped.get(key) ?? []), message]);
       });
+      grouped.forEach((batch, sessionId) => {
+        const latest = batch[batch.length - 1];
+        const incomingCount = batch.filter((message) => String(message.senderId) !== String(session.userId)).length;
+        const currentIndex = nextConversations.findIndex((item) => item.id === sessionId);
+        const preview = realtimePreview(latest);
+        const active = activeConversationIdRef.current === sessionId;
+        if (currentIndex >= 0) {
+          const existing = nextConversations[currentIndex];
+          const updated: Conversation = {
+            ...existing,
+            preview,
+            time: formatConversationTime(latest.createdTime),
+            unread: active ? 0 : existing.unread + incomingCount,
+            failed: false,
+          };
+          nextConversations.splice(currentIndex, 1);
+          nextConversations.unshift(updated);
+        } else {
+          const contact = contacts.find((item) => item.conversationId === sessionId);
+          const group = groups.find((item) => item.sessionId === sessionId);
+          const name = group?.name
+            || contact?.name
+            || (latest.sessionType === 1 ? "新群聊" : latest.nickname || "新消息");
+          nextConversations.unshift({
+            id: sessionId,
+            name,
+            avatar: group?.avatar || contact?.avatar || name.slice(0, 1),
+            avatarTone: contact?.avatarTone || toneFromId(sessionId),
+            preview,
+            time: formatConversationTime(latest.createdTime),
+            unread: active ? 0 : incomingCount,
+            presence: contact?.presence,
+            peerId: contact?.id || (latest.sessionType === 0 && String(latest.senderId) !== String(session.userId)
+              ? String(latest.senderId)
+              : undefined),
+            group: latest.sessionType === 1,
+            membersCount: group?.members.length,
+          });
+        }
+      });
+      conversationsRef.current = nextConversations;
+      setConversations(nextConversations);
     }
+    saveChatState(session.userId, nextConversations, nextMessages);
 
     return accepted.length;
   };
@@ -956,15 +960,44 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
 
     const syncOffline = async () => {
       const run = ++syncRun;
-      const syncStartedAt = Date.now();
       setSyncState("syncing");
       try {
-        const batches = await fetchOfflineMessages(session, offlineStartRef.current);
-        if (!active || run !== syncRun) return;
-        applyServerMessagesRef.current(Object.values(batches).flat(), false, true);
-        offlineStartRef.current = syncStartedAt;
-        saveOfflineCursor(session.userId, syncStartedAt);
-        setLastSyncTime(formatClock(new Date()));
+        let cursor = offlineCursorRef.current;
+        let serverTime = Date.now();
+        let hasMore = false;
+        let invalidCursorReset = false;
+        do {
+          let page: OfflineSyncResponse;
+          try {
+            page = await syncOfflineMessages(session, cursor);
+          } catch (error) {
+            if (error instanceof RealtimeApiError
+              && error.code === 90008
+              && cursor
+              && !invalidCursorReset) {
+              cursor = null;
+              offlineCursorRef.current = null;
+              clearOfflineCursor(session.userId);
+              invalidCursorReset = true;
+              hasMore = true;
+              continue;
+            }
+            throw error;
+          }
+          if (!active || run !== syncRun) return;
+          applyServerMessagesRef.current(page.items, false, true);
+          serverTime = page.serverTime;
+          hasMore = page.hasMore;
+          const nextCursor = page.nextCursor || null;
+          if (nextCursor && nextCursor !== cursor) {
+            cursor = nextCursor;
+            offlineCursorRef.current = nextCursor;
+            saveOfflineCursor(session.userId, nextCursor);
+          } else if (hasMore) {
+            throw new RealtimeApiError("消息同步游标没有前进");
+          }
+        } while (hasMore);
+        setLastSyncTime(formatClock(new Date(serverTime)));
         setSyncState("synced");
       } catch {
         if (active && run === syncRun) setSyncState("failed");
@@ -2776,6 +2809,13 @@ function saveChatState(
   messages: Record<string, ChatMessage[]>,
 ) {
   window.localStorage.setItem(`${CONVERSATION_STORAGE_PREFIX}.${userId}`, JSON.stringify(conversations));
+  saveMessages(userId, messages);
+}
+
+function saveMessages(
+  userId: AuthSession["userId"],
+  messages: Record<string, ChatMessage[]>,
+) {
   window.localStorage.setItem(`${MESSAGE_STORAGE_PREFIX}.${userId}`, JSON.stringify(messages));
 }
 

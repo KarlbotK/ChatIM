@@ -7,7 +7,7 @@
 - 下一轮重点不是继续堆页面，而是把消息可靠性、跨设备会话恢复、群资料和安全存储补成可联调、可验收的完整链路。
 - 本轮按三个里程碑实施。必须先完成协议和数据闭环，再开发依赖这些协议的重试、未读和群管理页面。
 
-> 实施进度：里程碑 A 第 1、2 项已经落地。移动端使用 Bearer Header，浏览器使用一次性短期 ticket；消息链路已增加 accepted、persisted、failed ACK，以“已认证发送者 + clientMessageId”幂等，并提供发送结果查询。
+> 实施进度：里程碑 A 第 1—3 项已经落地。移动端使用 Bearer Header，浏览器使用一次性短期 ticket；消息链路已增加 accepted、persisted、failed ACK，以“已认证发送者 + clientMessageId”幂等，并提供发送结果查询；离线同步使用账号绑定的服务端签名游标和 MySQL 完整回源。
 
 ## 2. 本轮目标
 
@@ -158,13 +158,13 @@
 
 ### 7.1 新接口形式
 
-建议将离线接口升级为游标分页：
+离线接口已升级为游标分页：
 
 - `POST /api/message/offline/sync`
 - 请求：`cursor`、`limit`，首次同步 cursor 可空。
 - 当前用户从 JWT 获取，请求体不再传 `userId`。
 
-建议返回：
+返回：
 
 ```json
 {
@@ -499,7 +499,7 @@
 1. WebSocket 鉴权已定稿：移动端使用 Bearer Header，浏览器同步提供一次性短期 ticket，生产环境统一使用 WSS。
 2. `message-ack` 已定稿为 accepted、persisted、failed 三阶段，前端 8 秒未获最终结果时查询状态。
 3. `clientMessageId` 已按发送者建立数据库唯一约束，重复请求返回原 messageId 和最终状态。
-4. 离线游标格式、分页大小、保留期限和 MySQL 回源策略。
+4. 离线游标已定稿：服务端签名的 v1 不透明游标，绑定用户并表达 `createdTime + messageId`；默认每页 20 条、最多 100 条，MySQL 为完整数据源，当前不设置游标保留期限。
 5. 会话摘要由 UserService 实时聚合还是通过事件维护读模型。
 6. 未读位置使用 `lastReadMessageId` 还是服务端联合游标。
 7. 图片使用公开 CDN 还是私有临时下载地址。
