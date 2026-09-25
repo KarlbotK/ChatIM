@@ -4,16 +4,20 @@ import java.util.concurrent.TimeUnit;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.goat.common.constant.UserStateConstant;
+import com.goat.common.constant.CommonConstant;
 import com.goat.common.constant.ValidationRedisKey;
 import com.goat.common.enums.FriendStatusEnum;
+import com.goat.common.enums.UserSessionStatusEnum;
 import com.goat.common.enums.ValidationError;
 import com.goat.common.model.dto.validation.*;
 import com.goat.userservice.mapper.FriendMapper;
+import com.goat.userservice.mapper.SessionMapper;
 import com.goat.userservice.mapper.UserMapper;
 import com.goat.userservice.mapper.UserSessionMapper;
 import com.goat.userservice.model.entity.Friend;
 import com.goat.userservice.model.entity.User;
 import com.goat.userservice.model.entity.UserSession;
+import com.goat.userservice.model.entity.Session;
 import com.goat.userservice.service.InternalValidationService;
 
 import jakarta.annotation.Resource;
@@ -38,6 +42,9 @@ public class InternalValidationServiceImpl implements InternalValidationService 
 
     @Resource
     private FriendMapper friendMapper;
+
+    @Resource
+    private SessionMapper sessionMapper;
 
     @Resource
     private StringRedisTemplate stringRedisTemplate;
@@ -84,7 +91,8 @@ public class InternalValidationServiceImpl implements InternalValidationService 
 
         LambdaQueryWrapper<UserSession> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(UserSession::getUserId, userId)
-                .eq(UserSession::getSessionId, sessionId);
+                .eq(UserSession::getSessionId, sessionId)
+                .eq(UserSession::getStatus, UserSessionStatusEnum.NORMAL.getCode());
         UserSession userSession = userSessionMapper.selectOne(wrapper);
 
         GroupMembershipResponse response = new GroupMembershipResponse();
@@ -96,6 +104,15 @@ public class InternalValidationServiceImpl implements InternalValidationService 
         log.debug("群成员资格验证完成, userId={}, sessionId={}, isMember={}",
                 userId, sessionId, userSession != null);
         return response;
+    }
+
+    @Override
+    public Integer getSessionType(Long sessionId) {
+        LambdaQueryWrapper<Session> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(Session::getSessionId, sessionId)
+                .eq(Session::getStatus, CommonConstant.SESSION_STATUS);
+        Session session = sessionMapper.selectOne(wrapper);
+        return session == null ? null : session.getType();
     }
 
     @Override

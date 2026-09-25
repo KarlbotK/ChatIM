@@ -20,6 +20,11 @@ public class Message implements Serializable {
     private Long messageId;
 
     /**
+     * 客户端生成的幂等标识，与发送者共同唯一。
+     */
+    private String clientMessageId;
+
+    /**
      * 发送者 id
      */
     private Long senderId;

@@ -8,13 +8,16 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.goat.common.common.ErrorCode;
 import com.goat.common.constant.CommonConstant;
 import com.goat.common.constant.MessageTypeConstant;
+import com.goat.common.constant.MessageDeliveryStatus;
 import com.goat.common.exception.ThrowUtils;
 import com.goat.common.model.dto.MessageBody;
 import com.goat.common.model.dto.MessageRequest;
 import com.goat.common.model.vo.MessageResponse;
+import com.goat.common.model.vo.MessageDeliveryRecord;
 import com.goat.offlinedataservice.client.UserServiceClient;
 import com.goat.offlinedataservice.mapper.MessageMapper;
 import com.goat.offlinedataservice.model.dto.HistoryMessageRequest;
+import com.goat.offlinedataservice.model.dto.MessagePersistResult;
 import com.goat.offlinedataservice.model.dto.OfflineMessageRequest;
 import com.goat.offlinedataservice.model.entity.Message;
 import com.goat.offlinedataservice.service.MessageService;
@@ -22,6 +25,7 @@ import com.goat.offlinedataservice.service.MessageService;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -32,7 +36,7 @@ import java.util.*;
 public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message>
     implements MessageService{
     @Override
-    public void saveMessageToMySQL(MessageRequest messageRequest) {
+    public MessagePersistResult saveMessageToMySQL(MessageRequest messageRequest) {
         Message message = new Message();
         BeanUtil.copyProperties(messageRequest, message);
         MessageBody body = messageRequest.getBody();
@@ -44,7 +48,20 @@ public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message>
             message.setContent(body.getContent());
         }
         message.setReplyId(body.getReplyId());
-        ThrowUtils.throwIf(!this.save(message), ErrorCode.SYSTEM_ERROR);
+        try {
+            ThrowUtils.throwIf(!this.save(message), ErrorCode.SYSTEM_ERROR);
+            return new MessagePersistResult(persistedRecord(message), true);
+        } catch (DuplicateKeyException exception) {
+            Message existing = getExistingMessage(messageRequest);
+            if (existing == null) {
+                throw exception;
+            }
+            log.info("重复消息复用原结果，senderId={}，clientMessageId={}，messageId={}",
+                    messageRequest.getSenderId(),
+                    messageRequest.getClientMessageId(),
+                    existing.getMessageId());
+            return new MessagePersistResult(persistedRecord(existing), false);
+        }
     }
 
     @Resource
@@ -55,6 +72,80 @@ public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message>
 
     @Resource
     private UserServiceClient userServiceClient;
+
+    @Override
+    public MessageDeliveryRecord getMessageStatus(Long senderId, String clientMessageId) {
+        String redisValue = stringRedisTemplate.opsForValue().get(
+                CommonConstant.MESSAGE_DELIVERY_PREFIX + senderId + ":" + clientMessageId
+        );
+        MessageDeliveryRecord cached = null;
+        if (redisValue != null) {
+            cached = JSON.parseObject(redisValue, MessageDeliveryRecord.class);
+            if (!MessageDeliveryStatus.ACCEPTED.equals(cached.getStatus())) {
+                return cached;
+            }
+        }
+
+        try {
+            QueryWrapper<Message> queryWrapper = new QueryWrapper<>();
+            queryWrapper.eq("sender_id", senderId)
+                    .eq("client_message_id", clientMessageId)
+                    .last("LIMIT 1");
+            Message message = messageMapper.selectOne(queryWrapper);
+            if (message != null) {
+                MessageDeliveryRecord persisted = persistedRecord(message);
+                stringRedisTemplate.opsForValue().set(
+                        CommonConstant.MESSAGE_DELIVERY_PREFIX + senderId + ":" + clientMessageId,
+                        JSON.toJSONString(persisted),
+                        CommonConstant.MESSAGE_DELIVERY_TTL_DAYS,
+                        java.util.concurrent.TimeUnit.DAYS
+                );
+                return persisted;
+            }
+        } catch (RuntimeException exception) {
+            if (cached != null) {
+                log.warn("消息状态数据库确认失败，返回缓存状态，senderId={}，clientMessageId={}",
+                        senderId, clientMessageId, exception);
+                return cached;
+            }
+            throw exception;
+        }
+
+        if (cached != null) {
+            return cached;
+        }
+
+        return MessageDeliveryRecord.builder()
+                .clientMessageId(clientMessageId)
+                .senderId(senderId)
+                .status(MessageDeliveryStatus.NOT_FOUND)
+                .build();
+    }
+
+    private Message getExistingMessage(MessageRequest request) {
+        if (request.getClientMessageId() != null) {
+            QueryWrapper<Message> clientMessageQuery = new QueryWrapper<>();
+            clientMessageQuery.eq("sender_id", request.getSenderId())
+                    .eq("client_message_id", request.getClientMessageId())
+                    .last("LIMIT 1");
+            Message existing = messageMapper.selectOne(clientMessageQuery);
+            if (existing != null) {
+                return existing;
+            }
+        }
+        return messageMapper.selectById(request.getMessageId());
+    }
+
+    private MessageDeliveryRecord persistedRecord(Message message) {
+        return MessageDeliveryRecord.builder()
+                .clientMessageId(message.getClientMessageId())
+                .messageId(message.getMessageId())
+                .sessionId(message.getSessionId())
+                .senderId(message.getSenderId())
+                .status(MessageDeliveryStatus.PERSISTED)
+                .createdTime(message.getCreatedTime() == null ? null : message.getCreatedTime().getTime())
+                .build();
+    }
 
 
     // ==================== 离线消息查询 ====================
@@ -232,6 +323,7 @@ public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message>
         for (Message msg : messages) {
             MessageResponse response = new MessageResponse();
             response.setMessageId(msg.getMessageId());
+            response.setClientMessageId(msg.getClientMessageId());
             response.setSessionId(msg.getSessionId());
             response.setSenderId(msg.getSenderId());
             response.setType(msg.getType());

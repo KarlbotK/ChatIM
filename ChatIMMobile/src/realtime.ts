@@ -29,6 +29,22 @@ export type RealtimeMessage = {
   body: RealtimeMessageBody;
 };
 
+export type MessageDeliveryStatus = "accepted" | "persisted" | "failed" | "notFound";
+
+export type RealtimeMessageAck = {
+  clientMessageId: string;
+  messageId?: string | number | null;
+  sessionId?: string | number | null;
+  stage: Exclude<MessageDeliveryStatus, "notFound">;
+  createdTime?: number | null;
+  errorCode?: number | null;
+  errorMessage?: string | null;
+};
+
+export type MessageStatusResult = Omit<RealtimeMessageAck, "stage"> & {
+  status: MessageDeliveryStatus;
+};
+
 export type OutgoingRealtimeMessage = Pick<
   RealtimeMessage,
   "sessionId" | "receiverId" | "senderId" | "type" | "sessionType" | "clientMessageId" | "body"
@@ -77,6 +93,7 @@ type ClientOptions = {
   session: AuthSession;
   onState: (state: RealtimeConnectionState) => void;
   onMessage: (message: RealtimeMessage) => void;
+  onAck: (ack: RealtimeMessageAck) => void;
   onConnected: () => void;
 };
 
@@ -84,6 +101,7 @@ export class ChatRealtimeClient {
   private readonly session: AuthSession;
   private readonly onState: ClientOptions["onState"];
   private readonly onMessage: ClientOptions["onMessage"];
+  private readonly onAck: ClientOptions["onAck"];
   private readonly onConnected: ClientOptions["onConnected"];
   private socket: WebSocket | null = null;
   private stopped = false;
@@ -99,6 +117,7 @@ export class ChatRealtimeClient {
     this.session = options.session;
     this.onState = options.onState;
     this.onMessage = options.onMessage;
+    this.onAck = options.onAck;
     this.onConnected = options.onConnected;
   }
 
@@ -146,6 +165,13 @@ export class ChatRealtimeClient {
         this.onMessage({
           ...message,
           messageId: `demo-${message.clientMessageId}`,
+          createdTime: now,
+        });
+        this.onAck({
+          clientMessageId: message.clientMessageId || "",
+          messageId: `demo-${message.clientMessageId}`,
+          sessionId: message.sessionId,
+          stage: "persisted",
           createdTime: now,
         });
       }, 420);
@@ -222,7 +248,14 @@ export class ChatRealtimeClient {
           return;
         }
         try {
-          const message = JSON.parse(String(event.data)) as RealtimeMessage;
+          const payload = JSON.parse(String(event.data)) as
+            | RealtimeMessage
+            | { event?: string; data?: RealtimeMessageAck };
+          if ("event" in payload && payload.event === "message-ack" && payload.data?.clientMessageId) {
+            this.onAck(payload.data);
+            return;
+          }
+          const message = payload as RealtimeMessage;
           if (message && message.sessionId != null && message.body) this.onMessage(message);
         } catch {
           // Ignore malformed or unrelated service frames without breaking the live connection.
@@ -330,6 +363,17 @@ export async function fetchHistoryMessages(session: AuthSession, sessionId: stri
   });
 }
 
+export async function fetchMessageStatus(session: AuthSession, clientMessageId: string) {
+  if (demoModeEnabled) {
+    return {
+      clientMessageId,
+      status: "persisted",
+    } satisfies MessageStatusResult;
+  }
+  const params = new URLSearchParams({ clientMessageId });
+  return requestGet<MessageStatusResult>(session, `/api/message/status?${params.toString()}`);
+}
+
 function readOfflineCursor(userId: AuthSession["userId"]) {
   const parsed = Number(window.localStorage.getItem(`${OFFLINE_CURSOR_PREFIX}.${userId}`));
   return Number.isFinite(parsed) ? parsed : 0;
@@ -370,6 +414,34 @@ async function request<T>(session: AuthSession, path: string, body: Record<strin
       throw new RealtimeApiError("消息同步超时，请稍后重试");
     }
     throw new RealtimeApiError("暂时连接不上消息服务");
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function requestGet<T>(session: AuthSession, path: string) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 12_000);
+  try {
+    const response = await fetch(`${API_BASE}${path}`, {
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${session.accessToken}`,
+        "Refresh-Token": session.refreshToken,
+      },
+      signal: controller.signal,
+    });
+    const payload = (await response.json().catch(() => null)) as ApiResponse<T> | null;
+    if (!response.ok || !payload || payload.code !== 200) {
+      throw new RealtimeApiError(payload?.message || "消息状态查询失败", payload?.code, response.status);
+    }
+    return payload.data;
+  } catch (error) {
+    if (error instanceof RealtimeApiError) throw error;
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new RealtimeApiError("消息状态查询超时");
+    }
+    throw new RealtimeApiError("暂时无法查询消息状态");
   } finally {
     window.clearTimeout(timeout);
   }

@@ -83,6 +83,11 @@ public class InternalValidationController {
         return ResultUtils.success(response);
     }
 
+    @GetMapping("/session/type")
+    public BaseResponse<Integer> getSessionType(@RequestParam Long sessionId) {
+        return ResultUtils.success(internalValidationService.getSessionType(sessionId));
+    }
+
     /**
      * 单聊消息发送权限校验
      * <p>

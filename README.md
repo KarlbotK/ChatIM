@@ -4,7 +4,7 @@ ChatIM 是一个正在迭代中的分布式即时通讯项目。仓库中的 Mav
 
 项目包含基于 Spring Boot 的微服务后端、Netty WebSocket 实时通信、Kafka 消息链路、Redis 在线路由、MySQL 消息与业务数据、MinIO 图片上传，以及一个可直接运行的移动端交互原型。
 
-> 当前版本适合本地开发、产品演示和接口联调。可靠消息 ACK、服务端同步游标、完整会话摘要及部分群管理能力仍在下一轮计划中。
+> 当前版本适合本地开发、产品演示和接口联调。可靠消息 ACK 已接入；服务端同步游标、完整会话摘要及部分群管理能力仍在下一轮计划中。
 
 ## 当前能力
 
@@ -138,7 +138,7 @@ flowchart LR
 | MinIO | `http://localhost:9000` |
 | Canal | `localhost:11111` |
 
-仓库目前没有 Docker Compose 和完整的数据库迁移脚本。启动真实服务前，需要先准备 `InfiniteChat` 数据库及项目所需表结构。不要在未确认数据结构的情况下直接连接生产数据库。
+仓库目前没有 Docker Compose 和完整的基线建表脚本。启动真实服务前，需要先准备 `InfiniteChat` 数据库及项目所需表结构，并按顺序执行 `database/migrations` 下的增量脚本。不要在未确认数据结构的情况下直接连接生产数据库。
 
 ## 配置
 
@@ -294,6 +294,7 @@ HTTP 请求通过 Gateway 的 `http://localhost:10010` 访问。
 | 好友与联系人 | `/api/contact/**` |
 | 群聊 | `/api/group/**` |
 | 离线与历史消息 | `/api/message/**` |
+| 消息发送结果 | `GET /api/message/status?clientMessageId=` |
 | 红包 | `/api/chat/redPacket/**` |
 | 浏览器 WebSocket ticket | `POST /api/user/ws-ticket` |
 | WebSocket | `/ws/netty`，当前直连 RealTimeService |
@@ -319,9 +320,11 @@ Authorization: Bearer <accessToken>
 
 ```text
 客户端 WebSocket
-  -> RealTimeService 校验连接与会话消息
+  -> RealTimeService 绑定已认证发送者、校验会话权限并按 clientMessageId 幂等
+  -> WebSocket accepted ACK
   -> Kafka 存储 Topic
   -> OfflineDataService 持久化
+  -> Kafka persisted ACK -> 发送者 WebSocket
   -> Kafka 推送 Topic
   -> RealTimeService 查询 Redis 在线路由
   -> 本机推送或跨实例转发
@@ -335,19 +338,17 @@ Authorization: Bearer <accessToken>
 - 使用 `messageId` 去重；
 - 使用 `clientMessageId` 归并本地待发送消息。
 
-当前收到发送者自己的实时回推，只能证明消息进入了服务端推送链路，不能证明消息已经持久化。下一轮会增加独立的持久化 ACK。
+发送者收到 `accepted` 时消息仍显示“发送中”，收到 `persisted` 后才显示“已发送”。ACK 丢失或超时时，客户端通过 `/api/message/status` 查询 `accepted`、`persisted`、`failed` 或 `notFound`，不会把普通实时回推误认为落库成功。
 
 ## 当前限制
 
 - 后端尚无完整的会话摘要聚合接口，跨设备恢复会话列表仍有限制。
 - 当前离线补拉主要使用时间起点，可靠的服务端联合游标仍待实现。
-- 消息还没有区分 accepted 和 persisted 的正式 ACK。
-- `clientMessageId` 的服务端持久化幂等仍需补齐，结果未知时不能自动重发。
 - 群详情、成员分页、角色管理、退出和解散接口尚未完整实现。
 - 图片消息需要从长期下载 URL 调整为稳定对象标识。
 - 浏览器原型使用 `localStorage`，正式移动端必须迁移到系统安全存储和本地数据库。
 - 系统通知暂未形成独立的存储和历史查询闭环。
-- 数据库迁移、基础设施编排和一键启动脚本尚未纳入仓库。
+- 完整基线建表、自动迁移、基础设施编排和一键启动脚本尚未纳入仓库。
 
 ## 安全注意事项
 
@@ -371,13 +372,11 @@ Authorization: Bearer <accessToken>
 
 下一轮按以下顺序推进：
 
-1. 消息 accepted、persisted 和 failed ACK。
-2. `clientMessageId` 服务端幂等与结果查询。
-3. 服务端离线同步游标和 MySQL 回源。
-4. 会话摘要、已读位置和未读数。
-5. 群详情、成员和权限管理。
-6. 图片稳定对象标识与临时下载地址。
-7. 移动端安全存储。
-8. 消息手动重试和红包主流程。
+1. 服务端离线同步游标和 MySQL 回源。
+2. 会话摘要、已读位置和未读数。
+3. 群详情、成员和权限管理。
+4. 图片稳定对象标识与临时下载地址。
+5. 移动端安全存储。
+6. 消息手动重试和红包主流程。
 
 完整范围和验收条件见 [NEXT_ROUND_PRODUCT_REQUIREMENTS.md](./NEXT_ROUND_PRODUCT_REQUIREMENTS.md)。

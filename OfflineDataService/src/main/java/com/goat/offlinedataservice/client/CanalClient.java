@@ -275,6 +275,7 @@ public class CanalClient implements CommandLineRunner {
         messageResponse.setSessionId(Long.valueOf(map.get("session_id")));
         messageResponse.setSenderId(Long.valueOf(map.get("sender_id")));
         messageResponse.setMessageId(Long.valueOf(map.get("message_id")));
+        messageResponse.setClientMessageId(map.get("client_message_id"));
         Integer type = Integer.valueOf(map.get("type"));
         messageResponse.setType(type);
         messageResponse.setSessionType(Integer.valueOf(map.get("session_type")));

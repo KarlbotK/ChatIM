@@ -160,7 +160,7 @@ Authorization: Bearer <accessToken>
 - 同时检查 HTTP 状态与业务码：鉴权失效（如 40100、40103）时合并并发刷新请求，只尝试一次；刷新凭证失效时回登录页。Gateway 当前也可能将系统错误包装为 HTTP 401，不能仅凭 401 无限刷新；
 - `code == 200`：业务成功；
 - 其他业务码：显示服务端 message，并保留页面上下文；
-- 网络超时：查询可重试；发送消息保留原 clientMessageId，并按第 7.3 节处理结果未知。后端持久化幂等补齐前，不能自动重发消息或红包；
+- 网络超时：查询可重试；发送消息保留原 clientMessageId，并按第 7.3 节查询最终结果。普通消息重试必须复用该 ID；红包仍需等待独立账务幂等完成；
 - 重复请求：前端按钮进入 loading，业务层仍要依赖后端幂等。
 
 ### 4.4 ID 与时间
@@ -168,7 +168,7 @@ Authorization: Bearer <accessToken>
 - 雪花 ID 使用 `Long`，前端模型统一按 `String` 保存；当前服务端仍可能输出 JSON 数字，Web 端需服务端字符串化或无损解析，不能先转 JavaScript Number 再转字符串；
 - 前端内部时间统一转成毫秒；聊天 `createdTime` 和通知 `timestamp` 已使用毫秒，部分 HTTP DTO 仍是 Java Date，联调时需确认实际序列化格式；
 - 红包金额接口当前使用元，前端展示两位小数；
-- 消息 `clientMessageId` 由客户端生成，用于本地发送关联，不是数据库 messageId；目前未持久化，历史/离线消息可能缺失，服务端重试幂等仍待补齐。
+- 消息 `clientMessageId` 由客户端生成，用于本地发送关联，不是数据库 messageId；服务端按“已认证发送者 + clientMessageId”持久化并建立唯一约束，历史和离线消息会返回该字段。
 
 ## 5. 页面信息架构
 
@@ -370,7 +370,7 @@ App 请求 uploadUrl
 
 如果返回 20 条，就把最早一条消息的 `createdTime` 作为下一次 `beforeTime`，不要使用页码，以避免新消息插入导致翻页错位。
 
-这是现有时间游标的兼容方式；同一时间戳下超过一页的消息仍可能被跳过，完整分页需后端补充 `(createdTime, messageId)` 联合游标。离线/历史消息暂不保证有 `clientMessageId`；红包 body 当前可能被序列化在 `body.content` 中，适配层需兼容解析，后续由 OfflineDataService 与 Canal 统一输出结构。
+这是现有时间游标的兼容方式；同一时间戳下超过一页的消息仍可能被跳过，完整分页需后端补充 `(createdTime, messageId)` 联合游标。新消息的离线和历史结果会带 `clientMessageId`，迁移前旧数据可能为空；红包 body 当前可能被序列化在 `body.content` 中，适配层需兼容解析，后续由 OfflineDataService 与 Canal 统一输出结构。
 
 ### 6.6 红包
 
@@ -484,16 +484,17 @@ disconnected -> connecting -> connected -> reconnecting -> connected
 | 103 | 新群聊通知 | 群聊邀请提示 |
 | 104 | 群成员移除通知（已有常量，业务推送待实现） | 系统提示 |
 
-系统通知与聊天消息分别解析：通知使用 `timestamp` 和字符串 `messageId`，`sessionId`/`sessionType` 可空、body 随类型变化，不能强行套用普通 Message。聊天下行 `MessageResponse` 不包含 receiverId，clientMessageId 也不保证在补拉时存在。
+系统通知与聊天消息分别解析：通知使用 `timestamp` 和字符串 `messageId`，`sessionId`/`sessionType` 可空、body 随类型变化，不能强行套用普通 Message。聊天下行 `MessageResponse` 不包含 receiverId；新消息的历史和离线结果包含 clientMessageId，迁移前旧数据可能为空。
 
-当前后端没有统一的发送确认协议，也没有按 clientMessageId 的持久化重试幂等。前端第一版使用以下策略：
+当前普通消息已接入统一发送确认协议和 clientMessageId 持久化幂等：
 
 - 本地发送状态：sending、sent、unknown、failed；超时记为 unknown（结果待确认），不直接认定失败；
-- 使用 `clientMessageId` 关联输入框消息和实时回推；当前回推后可标记 sent，但仅表示已回推，不表示已持久化或对方已读；
-- 断线保留待确认消息，先补拉核对，后端幂等完成前不自动重发；
-- 后端幂等与原结果查询补齐后，重试必须复用同一个 clientMessageId；
+- 使用 `clientMessageId` 关联本地消息、实时消息和 ACK；普通实时回推不改变最终发送状态；
+- `accepted` 保持 sending，`persisted` 标记 sent，`failed` 标记 failed；
+- 8 秒内未收到最终 ACK 时调用 `GET /api/message/status?clientMessageId=`，仍未确认则标记 unknown；
+- 断线保留待确认消息，用户主动重试时复用同一个 clientMessageId；
 - 同时用 `messageId` 去重；
-- 后续由 RealTimeService 经 WebSocket 返回 `message-ack`，接收状态与持久化状态分开；持久化结果由 OfflineDataService 通过内部事件反馈。
+- RealTimeService 返回接收 ACK，OfflineDataService 落库后通过内部事件返回持久化 ACK。
 
 ## 8. 页面详细需求
 
@@ -682,7 +683,8 @@ disconnected -> connecting -> connected -> reconnecting -> connected
 | POST `/api/group/{sessionId}/leave` | 普通成员退出群聊 | 是否成功 |
 | DELETE `/api/group/{sessionId}/members/{userId}` | 群主或管理员移除成员 | 是否成功 |
 | PATCH `/api/group/{sessionId}` | 修改群名称、公告 | 群详情 |
-| WebSocket `message-ack`（待实现） | RealTimeService 主动返回发送结果 | messageId、clientMessageId、接收/持久化状态；失败错误码 |
+| WebSocket `message-ack` | RealTimeService 主动返回发送结果 | messageId、clientMessageId、accepted/persisted/failed；失败错误码 |
+| GET `/api/message/status?clientMessageId=` | 查询待确认消息结果 | accepted、persisted、failed 或 notFound |
 | GET `/api/message/unread` | 获取各会话未读数 | Map<sessionId, count> |
 
 这些接口中的当前用户都应从 JWT 获取，不能依赖请求体中的 userId。
@@ -755,7 +757,7 @@ isMuted: bool
 
 ```text
 messageId: String?
-clientMessageId: String?  // 本地待发送消息必填；历史/离线可能缺失
+clientMessageId: String?  // 新发送消息必填；迁移前历史数据可能缺失
 sessionId: String
 senderId: String
 receiverId: String?
@@ -957,7 +959,7 @@ status: 0 | 1
 3. HTTP 操作者身份取自 JWT、WebSocket 发送者取自已鉴权 Channel，并校验会话权限；
 4. 增加会话摘要、会话详情和同步保障；服务端未读数启用前明确本地统计限制；
 5. V0.2 再补齐群成员、群头像、群设置和退出群聊接口；
-6. 补齐持久化幂等、WebSocket 发送确认与已读接口，明确超时结果查询方式；
+6. 普通消息持久化幂等、WebSocket 发送确认和超时结果查询已完成，仍需补齐已读接口；
 7. 确认图片对象的公开访问策略，生产环境不要把 localhost 地址写入数据库；
 8. 按当前方案使用 RealTimeService 消费后查询 Redis 路由并转发；前端只依赖稳定的 `nettyUri` 和重连/离线补拉协议，暂不增加 PushRouter；
 9. 明确消息重复、重试和离线补拉的幂等规则；

@@ -6,6 +6,7 @@
 
     <resultMap id="BaseResultMap" type="com.goat.offlinedataservice.model.entity.Message">
         <id property="messageId" column="message_id" />
+        <result property="clientMessageId" column="client_message_id" />
         <result property="senderId" column="sender_id" />
         <result property="sessionId" column="session_id" />
         <result property="type" column="type" />
@@ -17,7 +18,7 @@
     </resultMap>
 
     <sql id="Base_Column_List">
-        message_id,sender_id,session_id,type,content,reply_id,
+        message_id,client_message_id,sender_id,session_id,type,content,reply_id,
         session_type,created_time,updated_time
     </sql>
 </mapper>

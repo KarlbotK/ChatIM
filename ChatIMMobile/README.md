@@ -55,11 +55,12 @@ $env:FRONTEND_ORIGIN="http://localhost:4173"
 - `WS /ws/netty`，文本心跳与消息收发
 - `POST /api/message/offline`
 - `POST /api/message/history`
+- `GET /api/message/status?clientMessageId=`
 
 当前浏览器版本用 `localStorage` 模拟移动端安全存储。正式客户端接入时应将访问令牌和刷新令牌迁移到系统安全存储。
 
 ## 当前接口边界
 
-后端目前还没有公开的会话摘要、群详情和群成员列表。前端会用 WebSocket 回推中的 `clientMessageId` 将本地消息更新为“已发送”，但这只代表消息已经进入后端推送链路，并不等同于持久化成功；超时没有收到回推时会显示“结果待确认”，不会自动重发。
+后端目前还没有公开的会话摘要、群详情和群成员列表。消息发送会分别收到 `accepted`、`persisted` 或 `failed` ACK，前端只在 `persisted` 后显示“已发送”；ACK 超时后会查询 `/api/message/status`，无法确认时显示“结果待确认”，不会自动重复发送。
 
 移动端原生连接通过 `window.chatIMCreateWebSocket(url, headers)` 注入 `Authorization: Bearer <accessToken>`。标准浏览器会先调用 `POST /api/user/ws-ticket` 获取最长 60 秒、仅可使用一次的短期 ticket，再连接服务端返回的 `nettyUri`；长期令牌不会写入 WebSocket URL。离线和历史消息接口继续通过 Gateway 访问。

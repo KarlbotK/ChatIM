@@ -1,11 +1,8 @@
 package com.goat.realtimeservice.websocket;
 
-import cn.hutool.json.JSONUtil;
 import com.goat.common.constant.CommonConstant;
-import com.goat.common.model.dto.MessageRequest;
-import com.goat.common.model.entity.Message;
 import com.goat.realtimeservice.constant.WebSocketConstant;
-import com.goat.realtimeservice.utils.SnowflakeDynamicUtil;
+import com.goat.realtimeservice.service.MessageDeliveryService;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
@@ -14,9 +11,6 @@ import io.netty.handler.timeout.IdleStateEvent;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.kafka.core.KafkaTemplate;
-
-import java.util.Date;
 
 @Slf4j
 @AllArgsConstructor
@@ -24,7 +18,7 @@ public class WebSocketHandler extends SimpleChannelInboundHandler<TextWebSocketF
 
     private final StringRedisTemplate stringRedisTemplate;
 
-    private final KafkaTemplate<String, String> kafkaTemplate;
+    private final MessageDeliveryService messageDeliveryService;
 
     private final WebSocketRouteService webSocketRouteService;
 
@@ -78,41 +72,7 @@ public class WebSocketHandler extends SimpleChannelInboundHandler<TextWebSocketF
     }
 
     public void sendMessageKafka(String msg, Channel channel) {
-        MessageRequest messageRequest = JSONUtil.toBean(msg, MessageRequest.class);
-        messageRequest.setMessageId(SnowflakeDynamicUtil.nextId());
-        messageRequest.setCreatedTime(new Date());
-
-        // 消息存储, 存储只存储一次，避免重复消费
-        try {
-            kafkaTemplate.send(CommonConstant.KAFKA_MESSAGE_TOPIC_STORE, JSONUtil.toJsonStr(messageRequest)).whenComplete((success, failure) -> {
-                if (failure != null) {
-                    log.error("消息存储事件发送失败，messageId: {}，原因: {}",
-                            messageRequest.getMessageId(), failure.getMessage(), failure);
-                } else {
-                    log.info("消息存储事件发送成功，messageId: {}，offset: {}",
-                            messageRequest.getMessageId(), success.getRecordMetadata().offset());
-                }
-            });
-        } catch (Exception e) {
-            log.error("消息存储事件发送异常，messageId: {}，原因: {}",
-                    messageRequest.getMessageId(), e.getMessage(), e);
-        }
-
-        // 消息推送消息
-        try {
-            kafkaTemplate.send(CommonConstant.KAFKA_MESSAGE_TOPIC_PUSH, messageRequest.getSessionId().toString(), JSONUtil.toJsonStr(messageRequest)).whenComplete((success, failure) -> {
-                if (failure != null) {
-                    log.error("消息推送事件发送失败，messageId: {}，原因: {}",
-                            messageRequest.getMessageId(), failure.getMessage(), failure);
-                } else {
-                    log.info("消息推送事件发送成功，messageId: {}，offset: {}",
-                            messageRequest.getMessageId(), success.getRecordMetadata().offset());
-                }
-            });
-        } catch (Exception e) {
-            log.error("消息推送事件发送异常，messageId: {}，原因: {}",
-                    messageRequest.getMessageId(), e.getMessage(), e);
-        }
+        messageDeliveryService.accept(msg, channel);
     }
 
     @Override

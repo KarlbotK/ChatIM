@@ -34,6 +34,8 @@ public interface InternalValidationService {
      */
     GroupMembershipResponse checkGroupMembership(Long userId, Long sessionId);
 
+    Integer getSessionType(Long sessionId);
+
     /**
      * 校验单聊消息发送权限
      *

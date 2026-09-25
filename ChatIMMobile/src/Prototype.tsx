@@ -86,12 +86,14 @@ import {
   ChatRealtimeClient,
   RealtimeApiError,
   fetchHistoryMessages,
+  fetchMessageStatus,
   fetchOfflineMessages,
   resolveOfflineStart,
   saveOfflineCursor,
   type OutgoingRealtimeMessage,
   type RealtimeConnectionState,
   type RealtimeMessage,
+  type RealtimeMessageAck,
 } from "./realtime";
 
 type Phase = "booting" | "signed-out" | "signed-in";
@@ -717,13 +719,19 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
   const [syncState, setSyncState] = useState<"idle" | "syncing" | "synced" | "failed">("idle");
   const [lastSyncTime, setLastSyncTime] = useState("");
   const realtimeRef = useRef<ChatRealtimeClient | null>(null);
+  const messagesRef = useRef(messages);
   const syncOfflineRef = useRef<(() => Promise<void>) | null>(null);
   const activeConversationIdRef = useRef<string | null>(null);
   const offlineStartRef = useRef(resolveOfflineStart(session, Date.now()));
   const seenServerKeysRef = useRef<Set<string> | null>(null);
-  const applyServerMessagesRef = useRef<(incoming: RealtimeMessage[], history?: boolean) => number>(() => 0);
+  const applyServerMessagesRef = useRef<(
+    incoming: RealtimeMessage[],
+    history?: boolean,
+    confirmed?: boolean,
+  ) => number>(() => 0);
 
   if (!seenServerKeysRef.current) seenServerKeysRef.current = collectServerMessageKeys(messages);
+  messagesRef.current = messages;
   activeConversationIdRef.current = activeConversationId;
 
   const tabs = useMemo(
@@ -748,7 +756,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
   const applicationUnread = applications.filter((item) => item.isReceiver === 1 && item.status === 0).length;
   const syncPresentation = describeSyncState(connectionState, syncState, lastSyncTime);
 
-  applyServerMessagesRef.current = (incoming, history = false) => {
+  applyServerMessagesRef.current = (incoming, history = false, confirmed = false) => {
     const seen = seenServerKeysRef.current!;
     const accepted = incoming
       .filter(isRealtimeMessage)
@@ -770,6 +778,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
         const sessionId = String(message.sessionId);
         const existing = [...(next[sessionId] ?? [])];
         const converted = toChatMessage(message, session.userId);
+        if (!confirmed && converted.mine) converted.status = "sending";
         const matchIndex = message.clientMessageId
           ? existing.findIndex((item) => item.clientMessageId === message.clientMessageId || item.id === message.clientMessageId)
           : -1;
@@ -783,7 +792,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
             imageHeight: local.imageHeight,
             imageSize: local.imageSize,
             uploadProgress: undefined,
-            status: "sent",
+            status: confirmed ? "sent" : local.status,
           };
         } else {
           existing.push(converted);
@@ -848,6 +857,69 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
     return accepted.length;
   };
 
+  const applyMessageAck = (ack: RealtimeMessageAck) => {
+    if (ack.stage === "accepted") return;
+    setMessages((current) => {
+      const next = { ...current };
+      const targetSessionId = ack.sessionId == null ? null : String(ack.sessionId);
+      Object.entries(next).forEach(([sessionId, items]) => {
+        if (targetSessionId && sessionId !== targetSessionId) return;
+        next[sessionId] = items.map((item) => {
+          if (item.clientMessageId !== ack.clientMessageId) return item;
+          return {
+            ...item,
+            messageId: ack.messageId == null ? item.messageId : String(ack.messageId),
+            createdTime: ack.createdTime ?? item.createdTime,
+            time: ack.createdTime ? formatClock(new Date(ack.createdTime)) : item.time,
+            status: ack.stage === "persisted" ? "sent" : "failed",
+          };
+        });
+      });
+      return next;
+    });
+    if (ack.sessionId != null) {
+      setConversations((current) => current.map((conversation) =>
+        conversation.id === String(ack.sessionId)
+          ? { ...conversation, failed: ack.stage === "failed" }
+          : conversation,
+      ));
+    }
+  };
+
+  const reconcilePendingMessageStatuses = async () => {
+    const pending = Object.values(messagesRef.current)
+      .flat()
+      .filter((message) => message.mine
+        && Boolean(message.clientMessageId)
+        && (message.status === "sending" || message.status === "unknown"))
+      .slice(0, 50);
+
+    const results = await Promise.allSettled(
+      pending.map((message) => fetchMessageStatus(session, message.clientMessageId!)),
+    );
+    results.forEach((result, index) => {
+      if (result.status !== "fulfilled") return;
+      const status = result.value;
+      if (status.status === "persisted" || status.status === "failed") {
+        const { status: stage, ...ack } = status;
+        applyMessageAck({
+          ...ack,
+          stage,
+        });
+        return;
+      }
+      const clientMessageId = pending[index].clientMessageId;
+      setMessages((current) => Object.fromEntries(
+        Object.entries(current).map(([sessionId, items]) => [
+          sessionId,
+          items.map((item) => item.clientMessageId === clientMessageId
+            ? { ...item, status: "unknown" as const }
+            : item),
+        ]),
+      ));
+    });
+  };
+
   useEffect(() => {
     saveDrafts(session.userId, drafts);
   }, [drafts, session.userId]);
@@ -889,7 +961,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
       try {
         const batches = await fetchOfflineMessages(session, offlineStartRef.current);
         if (!active || run !== syncRun) return;
-        applyServerMessagesRef.current(Object.values(batches).flat());
+        applyServerMessagesRef.current(Object.values(batches).flat(), false, true);
         offlineStartRef.current = syncStartedAt;
         saveOfflineCursor(session.userId, syncStartedAt);
         setLastSyncTime(formatClock(new Date()));
@@ -908,9 +980,15 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
       onMessage: (message) => {
         if (active) applyServerMessagesRef.current([message]);
       },
+      onAck: (ack) => {
+        if (!active) return;
+        applyMessageAck(ack);
+        if (ack.stage === "failed" && ack.errorMessage) setNotice(ack.errorMessage);
+      },
       onConnected: () => {
         if (!active) return;
         void syncOffline();
+        void reconcilePendingMessageStatuses();
         if (!demoModeEnabled) {
           Promise.all([fetchFriends(session), fetchFriendApplications(session), fetchFriendApplicationCount(session)])
             .then(([friendItems, applicationItems]) => {
@@ -998,14 +1076,26 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
     };
     const accepted = realtimeRef.current?.send(payload) ?? false;
     window.setTimeout(() => {
-      setMessages((items) => ({
-        ...items,
-        [conversation.id]: (items[conversation.id] ?? []).map((item) =>
-          item.clientMessageId === clientMessageId && item.status === "sending"
-            ? { ...item, status: "unknown" }
-            : item,
-        ),
-      }));
+      void (async () => {
+        let resolvedStatus: MessageStatus = "unknown";
+        if (accepted) {
+          try {
+            const result = await fetchMessageStatus(session, clientMessageId);
+            if (result.status === "persisted") resolvedStatus = "sent";
+            if (result.status === "failed") resolvedStatus = "failed";
+          } catch {
+            // Keep an unknown result when the status service is temporarily unavailable.
+          }
+        }
+        setMessages((items) => ({
+          ...items,
+          [conversation.id]: (items[conversation.id] ?? []).map((item) =>
+            item.clientMessageId === clientMessageId && item.status === "sending"
+              ? { ...item, status: resolvedStatus }
+              : item,
+          ),
+        }));
+      })();
     }, accepted ? 8_000 : 260);
     return accepted;
   };
@@ -1360,7 +1450,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
             .filter((value): value is number => typeof value === "number" && value > 0);
           const beforeTime = timestamps.length > 0 ? Math.min(...timestamps) : Date.now();
           const history = await fetchHistoryMessages(session, activeConversation.id, beforeTime);
-          return applyServerMessagesRef.current(history, true);
+          return applyServerMessagesRef.current(history, true, true);
         }}
       />
     );

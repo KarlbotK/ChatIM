@@ -11,13 +11,13 @@ import io.netty.handler.codec.http.HttpServerCodec;
 import io.netty.handler.codec.http.websocketx.WebSocketServerProtocolHandler;
 import io.netty.handler.timeout.IdleStateHandler;
 import io.netty.util.NettyRuntime;
+import com.goat.realtimeservice.service.MessageDeliveryService;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.kafka.core.KafkaTemplate;
 
 @Configuration
 @RequiredArgsConstructor
@@ -35,7 +35,7 @@ public class NettyService {
 
     private final StringRedisTemplate stringRedisTemplate;
 
-    private final KafkaTemplate<String, String> kafkaTemplate;
+    private final MessageDeliveryService messageDeliveryService;
 
     private final WebSocketRouteService webSocketRouteService;
 
@@ -76,7 +76,7 @@ public class NettyService {
                         // 9. 处理真正的WebSocket聊天消息
                         channelPipeline.addLast(new WebSocketHandler(
                                 stringRedisTemplate,
-                                kafkaTemplate,
+                                messageDeliveryService,
                                 webSocketRouteService
                         ));
 

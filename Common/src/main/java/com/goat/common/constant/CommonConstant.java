@@ -29,6 +29,12 @@ public class CommonConstant {
 
     public static final String KAFKA_MESSAGE_TOPIC_PUSH = "message-topic";
 
+    public static final String KAFKA_MESSAGE_ACK_TOPIC = "message-ack-topic";
+
+    public static final String MESSAGE_DELIVERY_PREFIX = "message:delivery:";
+
+    public static final long MESSAGE_DELIVERY_TTL_DAYS = 7L;
+
     /**
      * 系统通知消息 Kafka 主题
      */

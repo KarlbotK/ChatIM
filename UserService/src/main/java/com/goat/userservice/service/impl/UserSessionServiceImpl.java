@@ -23,7 +23,8 @@ public class UserSessionServiceImpl extends ServiceImpl<UserSessionMapper, UserS
     @Override
     public List<Long> getUserIdBySessionId(Long sessionId) {
         QueryWrapper<UserSession> queryWrapper = new QueryWrapper<>();
-        queryWrapper.eq("session_id", sessionId);
+        queryWrapper.eq("session_id", sessionId)
+                .eq("status", UserSessionStatusEnum.NORMAL.getCode());
         List<UserSession> userSessions = this.list(queryWrapper);
         return userSessions.stream().map(UserSession::getUserId).collect(Collectors.toList());
     }
@@ -31,7 +32,8 @@ public class UserSessionServiceImpl extends ServiceImpl<UserSessionMapper, UserS
     @Override
     public List<Long> getSessionIdsByUserId(Long userId) {
         QueryWrapper<UserSession> queryWrapper = new QueryWrapper<>();
-        queryWrapper.eq("user_id", userId);
+        queryWrapper.eq("user_id", userId)
+                .eq("status", UserSessionStatusEnum.NORMAL.getCode());
         List<UserSession> userSessions = this.list(queryWrapper);
         return userSessions.stream().map(UserSession::getSessionId).collect(Collectors.toList());
     }

@@ -3,7 +3,10 @@ package com.goat.realtimeservice.consumer;
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.json.JSONUtil;
 import com.goat.common.constant.SessionTypeConstant;
+import com.goat.common.constant.CommonConstant;
 import com.goat.common.model.dto.MessageRequest;
+import com.goat.common.model.vo.MessageAckEvent;
+import com.goat.common.model.vo.MessageDeliveryRecord;
 import com.goat.common.model.vo.MessageResponse;
 import com.goat.realtimeservice.client.UserServiceClient;
 import com.goat.realtimeservice.websocket.WebSocketPushService;
@@ -25,7 +28,7 @@ public class ConsumerMessageService {
     @Resource
     private WebSocketPushService webSocketPushService;
 
-    @KafkaListener(topics = "message-topic", groupId = "infinite-chat-push-group-0")
+    @KafkaListener(topics = CommonConstant.KAFKA_MESSAGE_TOPIC_PUSH, groupId = "infinite-chat-push-group-0")
     public void consume(String message) {
         try {
             log.info("收到消息推送事件：{}", message);
@@ -37,6 +40,26 @@ public class ConsumerMessageService {
             }
         } catch (Exception e) {
             log.error("消息推送事件处理失败：{}", message, e);
+        }
+    }
+
+    @KafkaListener(topics = CommonConstant.KAFKA_MESSAGE_ACK_TOPIC, groupId = "infinite-chat-message-ack-group")
+    public void consumeMessageAck(String message) {
+        try {
+            MessageDeliveryRecord record = JSONUtil.toBean(message, MessageDeliveryRecord.class);
+            if (record.getSenderId() == null) {
+                log.warn("忽略缺少 senderId 的消息 ACK: {}", message);
+                return;
+            }
+            boolean routed = webSocketPushService.pushToUser(
+                    record.getSenderId(),
+                    JSONUtil.toJsonStr(MessageAckEvent.from(record))
+            );
+            if (!routed) {
+                log.debug("发送者当前不在线，ACK 将由状态接口恢复，senderId={}", record.getSenderId());
+            }
+        } catch (Exception exception) {
+            log.error("消息 ACK 处理失败: {}", message, exception);
         }
     }
 
