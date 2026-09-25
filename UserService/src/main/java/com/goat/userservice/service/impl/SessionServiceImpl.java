@@ -21,7 +21,9 @@ import com.goat.userservice.mapper.UserSessionMapper;
 import com.goat.userservice.model.dto.NewGroupSessionNotificationDTO;
 import com.goat.userservice.model.dto.request.CreateGroupRequest;
 import com.goat.userservice.model.dto.response.CreateGroupResponse;
+import com.goat.userservice.model.dto.response.SessionDetailResponse;
 import com.goat.userservice.model.dto.response.SessionListResponse;
+import com.goat.userservice.model.dto.response.SessionParticipantResponse;
 import com.goat.userservice.model.dto.response.SessionReadResponse;
 import com.goat.userservice.model.dto.response.SessionSummaryResponse;
 import com.goat.userservice.model.entity.Friend;
@@ -218,6 +220,74 @@ public class SessionServiceImpl extends ServiceImpl<SessionMapper, Session>
                 .nextCursor(nextCursor)
                 .hasMore(hasMore)
                 .serverTime(System.currentTimeMillis())
+                .build();
+    }
+
+    @Override
+    public SessionDetailResponse getSessionDetail(Long userId, Long sessionId) {
+        LambdaQueryWrapper<UserSession> membershipQuery = new LambdaQueryWrapper<>();
+        membershipQuery.eq(UserSession::getUserId, userId)
+                .eq(UserSession::getSessionId, sessionId)
+                .eq(UserSession::getStatus, SESSION_STATUS_NORMAL);
+        UserSession membership = userSessionMapper.selectOne(membershipQuery);
+        ThrowUtils.throwIf(membership == null, ErrorCode.MESSAGE_NOT_IN_SESSION);
+
+        LambdaQueryWrapper<Session> sessionQuery = new LambdaQueryWrapper<>();
+        sessionQuery.eq(Session::getSessionId, sessionId)
+                .eq(Session::getStatus, SESSION_STATUS_NORMAL);
+        Session session = sessionMapper.selectOne(sessionQuery);
+        ThrowUtils.throwIf(session == null, ErrorCode.NOT_FOUND_ERROR, "会话不存在或已失效");
+
+        LambdaQueryWrapper<UserSession> membersQuery = new LambdaQueryWrapper<>();
+        membersQuery.eq(UserSession::getSessionId, sessionId)
+                .eq(UserSession::getStatus, SESSION_STATUS_NORMAL);
+        List<UserSession> members = userSessionMapper.selectList(membersQuery);
+
+        User peer = null;
+        Long ownerId = null;
+        if (session.getType() != null && session.getType() == SessionTypeConstant.SIGNAL_TYPE) {
+            Long peerId = members.stream()
+                    .map(UserSession::getUserId)
+                    .filter(memberId -> !userId.equals(memberId))
+                    .findFirst()
+                    .orElse(null);
+            if (peerId != null) {
+                peer = userService.getById(peerId);
+            }
+        } else if (session.getType() != null && session.getType() == SessionTypeConstant.GROUP_TYPE) {
+            ownerId = members.stream()
+                    .filter(member -> Objects.equals(member.getRole(), USER_ROLE_GROUP_OWNER))
+                    .map(UserSession::getUserId)
+                    .findFirst()
+                    .orElse(null);
+        }
+
+        SessionParticipantResponse peerResponse = peer == null ? null : SessionParticipantResponse.builder()
+                .userId(peer.getUserId())
+                .nickname(peer.getNickname())
+                .avatar(peer.getAvatar())
+                .description(peer.getDescription())
+                .build();
+        boolean group = session.getType() != null && session.getType() == SessionTypeConstant.GROUP_TYPE;
+        return SessionDetailResponse.builder()
+                .sessionId(sessionId)
+                .sessionType(session.getType())
+                .name(peer == null ? session.getName() : peer.getNickname())
+                .avatar(peer == null ? session.getAvatar() : peer.getAvatar())
+                .announcement(null)
+                .peer(peerResponse)
+                .ownerId(ownerId)
+                .memberCount(group ? members.size() : null)
+                .currentUserRole(group ? membership.getRole() : null)
+                .currentUserMember(true)
+                .pinned(Boolean.TRUE.equals(membership.getPinned()))
+                .muted(Boolean.TRUE.equals(membership.getMuted()))
+                .lastReadMessageId(membership.getLastReadMessageId())
+                .createdTime(dateValue(session.getCreatedTime(), null))
+                .updatedTime(Math.max(
+                        dateValue(session.getUpdatedTime(), session.getCreatedTime()),
+                        dateValue(membership.getUpdatedTime(), membership.getCreatedTime())
+                ))
                 .build();
     }
 

@@ -15,7 +15,6 @@ public class InviteGroupRequest implements Serializable {
     @NotNull(message = "会话ID不能为空")
     private Long sessionId;
 
-    @NotNull(message = "邀请者ID不能为空")
     private Long inviterId;
 
     @NotNull(message = "被邀请者ID不能为空")

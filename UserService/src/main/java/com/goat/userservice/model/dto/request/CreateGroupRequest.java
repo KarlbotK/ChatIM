@@ -18,7 +18,6 @@ public class CreateGroupRequest implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /** 创建者用户 ID */
-    @NotNull(message = "创建者ID不能为空")
     private Long creatorId;
 
     /** 成员用户 ID 列表 */

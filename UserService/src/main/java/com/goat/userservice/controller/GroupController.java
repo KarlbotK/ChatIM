@@ -8,13 +8,19 @@ import com.goat.userservice.model.dto.request.InviteGroupRequest;
 import com.goat.userservice.model.dto.response.CreateGroupResponse;
 import com.goat.userservice.model.dto.request.CreateGroupRequest;
 import com.goat.userservice.model.dto.response.InviteGroupResponse;
+import com.goat.userservice.model.dto.response.GroupMemberListResponse;
 import com.goat.userservice.service.GroupService;
 import com.goat.userservice.service.SessionService;
+import com.goat.userservice.utils.AuthenticatedUserResolver;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Slf4j
@@ -23,18 +29,24 @@ import org.springframework.web.bind.annotation.RestController;
 public class GroupController {
     private final SessionService sessionService;
     private final GroupService groupService;
+    private final AuthenticatedUserResolver authenticatedUserResolver;
 
     public GroupController(SessionService sessionService,
-                           GroupService groupService) {
+                           GroupService groupService,
+                           AuthenticatedUserResolver authenticatedUserResolver) {
 
         this.sessionService = sessionService;
         this.groupService=groupService;
+        this.authenticatedUserResolver = authenticatedUserResolver;
     }
 
 
     @PostMapping
-    public BaseResponse<?> createGroup(@Valid @RequestBody CreateGroupRequest request) {
+    public BaseResponse<?> createGroup(
+            @Valid @RequestBody CreateGroupRequest request,
+            HttpServletRequest httpRequest) {
         try {
+            request.setCreatorId(authenticatedUserResolver.resolve(httpRequest));
             CreateGroupResponse response = sessionService.createGroup(request);
             return ResultUtils.success(response);
         } catch (BusinessException e) {
@@ -48,8 +60,11 @@ public class GroupController {
 
     // GroupController.java
     @PostMapping("/invite")
-    public BaseResponse<?> inviteGroup(@Valid @RequestBody InviteGroupRequest request) {
+    public BaseResponse<?> inviteGroup(
+            @Valid @RequestBody InviteGroupRequest request,
+            HttpServletRequest httpRequest) {
         try {
+            request.setInviterId(authenticatedUserResolver.resolve(httpRequest));
             InviteGroupResponse response = groupService.inviteGroup(request);
             return ResultUtils.success(response);
         } catch (BusinessException e) {
@@ -59,5 +74,19 @@ public class GroupController {
             log.error("群聊邀请失败，原因：{}", e.getMessage(), e);
             return ResultUtils.error(ErrorCode.SYSTEM_ERROR);
         }
+    }
+
+    @GetMapping("/{sessionId}/members")
+    public BaseResponse<GroupMemberListResponse> listMembers(
+            @PathVariable Long sessionId,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(required = false) Integer limit,
+            HttpServletRequest request) {
+        return ResultUtils.success(groupService.listMembers(
+                authenticatedUserResolver.resolve(request),
+                sessionId,
+                cursor,
+                limit
+        ));
     }
 }

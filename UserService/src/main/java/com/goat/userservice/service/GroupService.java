@@ -3,9 +3,13 @@ package com.goat.userservice.service;
 
 import com.goat.userservice.model.dto.request.InviteGroupRequest;
 import com.goat.userservice.model.dto.response.InviteGroupResponse;
+import com.goat.userservice.model.dto.response.GroupMemberListResponse;
 
 //群组服务接口
 public interface GroupService {
+
+    GroupMemberListResponse listMembers(Long requesterId, Long sessionId, String cursor, Integer limit);
+
     /*
     * 邀请用户加入群聊
     *

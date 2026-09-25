@@ -13,21 +13,29 @@ import com.goat.userservice.mapper.UserSessionMapper;
 import com.goat.userservice.model.dto.NewGroupSessionNotificationDTO;
 import com.goat.userservice.model.dto.request.InviteGroupRequest;
 import com.goat.userservice.model.dto.response.InviteGroupResponse;
+import com.goat.userservice.model.dto.response.GroupMemberListResponse;
+import com.goat.userservice.model.dto.response.GroupMemberResponse;
 import com.goat.userservice.model.entity.Friend;
 import com.goat.userservice.model.entity.Session;
+import com.goat.userservice.model.entity.User;
 import com.goat.userservice.model.entity.UserSession;
 import com.goat.userservice.service.GroupService;
 import com.goat.userservice.service.NotificationService;
 import com.goat.userservice.service.UserSessionService;
 import com.goat.userservice.utils.OssUtils;
+import com.goat.userservice.utils.GroupMemberCursorCodec;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -39,6 +47,7 @@ public class GroupServiceImpl implements GroupService {
     private final NotificationService notificationService;
     private final UserSessionService userSessionService;
     private final OssUtils ossUtils;
+    private final GroupMemberCursorCodec groupMemberCursorCodec;
 
     private static final int USER_ROLE_GROUP_OWNER=0;
     private static final int USER_ROLE_GROUP_ADMIN=1;
@@ -58,7 +67,9 @@ public class GroupServiceImpl implements GroupService {
                             FriendMapper friendMapper,
                             NotificationService notificationService,
                             UserSessionService userSessionService,
-                            OssUtils ossUtils, UserMapper userMapper){
+                            OssUtils ossUtils,
+                            UserMapper userMapper,
+                            GroupMemberCursorCodec groupMemberCursorCodec){
         this.sessionMapper=sessionMapper;
         this.userSessionMapper=userSessionMapper;
         this.friendMapper=friendMapper;
@@ -66,6 +77,75 @@ public class GroupServiceImpl implements GroupService {
         this.userSessionService=userSessionService;
         this.ossUtils=ossUtils;
         this.userMapper = userMapper;
+        this.groupMemberCursorCodec = groupMemberCursorCodec;
+    }
+
+    @Override
+    public GroupMemberListResponse listMembers(
+            Long requesterId,
+            Long sessionId,
+            String cursorValue,
+            Integer requestedLimit) {
+        int limit = Math.max(1, Math.min(
+                requestedLimit == null ? CommonConstant.DEFAULT_LIMIT : requestedLimit,
+                100
+        ));
+        validateSession(sessionId);
+        validateMembership(sessionId, requesterId);
+        GroupMemberCursorCodec.GroupMemberCursor cursor = groupMemberCursorCodec.decode(
+                cursorValue,
+                requesterId,
+                sessionId
+        );
+
+        List<UserSession> memberships = cursor == null
+                ? userSessionMapper.selectActiveGroupMembersFromStart(sessionId, limit + 1)
+                : userSessionMapper.selectActiveGroupMembersAfter(
+                        sessionId,
+                        cursor.role(),
+                        cursor.joinedTime(),
+                        cursor.memberId(),
+                        limit + 1
+                );
+        boolean hasMore = memberships.size() > limit;
+        List<UserSession> page = new ArrayList<>(memberships.subList(0, Math.min(limit, memberships.size())));
+        Map<Long, User> usersById = page.isEmpty()
+                ? Collections.emptyMap()
+                : userMapper.selectByIds(page.stream().map(UserSession::getUserId).toList())
+                        .stream()
+                        .collect(Collectors.toMap(User::getUserId, Function.identity()));
+
+        List<GroupMemberResponse> items = page.stream().map(member -> {
+            User user = usersById.get(member.getUserId());
+            return GroupMemberResponse.builder()
+                    .userId(member.getUserId())
+                    .nickname(user == null ? "已注销用户" : user.getNickname())
+                    .groupNickname(null)
+                    .avatar(user == null ? null : user.getAvatar())
+                    .description(user == null ? null : user.getDescription())
+                    .role(normalizeRole(member.getRole()))
+                    .status(member.getStatus())
+                    .joinedTime(dateValue(member.getCreatedTime()))
+                    .build();
+        }).toList();
+
+        String nextCursor = cursorValue;
+        if (!page.isEmpty()) {
+            UserSession last = page.get(page.size() - 1);
+            nextCursor = groupMemberCursorCodec.encode(
+                    requesterId,
+                    sessionId,
+                    normalizeRole(last.getRole()),
+                    dateValue(last.getCreatedTime()),
+                    last.getUserId()
+            );
+        }
+        return GroupMemberListResponse.builder()
+                .items(items)
+                .nextCursor(nextCursor)
+                .hasMore(hasMore)
+                .serverTime(System.currentTimeMillis())
+                .build();
     }
 
     // GroupServiceImpl.java
@@ -133,16 +213,22 @@ public class GroupServiceImpl implements GroupService {
     }
     // GroupServiceImpl.java
     private void validateInviterPermission(Long sessionId, Long inviterId) {
+        UserSession userSession = validateMembership(sessionId, inviterId);
+
+        ThrowUtils.throwIf(!Objects.equals(userSession.getRole(), USER_ROLE_GROUP_OWNER)
+                        && !Objects.equals(userSession.getRole(), USER_ROLE_GROUP_ADMIN),
+                ErrorCode.NO_AUTH_ERROR, "只有群主或管理员才能邀请成员");
+    }
+
+    private UserSession validateMembership(Long sessionId, Long userId) {
         LambdaQueryWrapper<UserSession> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(UserSession::getSessionId, sessionId)
-                .eq(UserSession::getUserId, inviterId)
+                .eq(UserSession::getUserId, userId)
                 .eq(UserSession::getStatus, SESSION_STATUS_NORMAL);
         UserSession userSession = userSessionMapper.selectOne(wrapper);
 
         ThrowUtils.throwIf(userSession == null, ErrorCode.NO_AUTH_ERROR, "您不在该群聊中");
-        ThrowUtils.throwIf(userSession.getRole() != USER_ROLE_GROUP_OWNER
-                        && userSession.getRole() != USER_ROLE_GROUP_ADMIN,
-                ErrorCode.NO_AUTH_ERROR, "只有群主或管理员才能邀请成员");
+        return userSession;
     }
     // GroupServiceImpl.java
     private List<Long> validateAndFilterFriends(Long inviterId, List<Long> inviteeIds,
@@ -260,5 +346,15 @@ public class GroupServiceImpl implements GroupService {
         notification.setCreatorId(creatorId);
         notification.setMembersCount(membersCount);
         return notification;
+    }
+
+    private int normalizeRole(Integer role) {
+        return role == null || role < USER_ROLE_GROUP_OWNER || role > USER_ROLE_GROUP_MEMBER
+                ? USER_ROLE_GROUP_MEMBER
+                : role;
+    }
+
+    private long dateValue(Date value) {
+        return value == null ? 0L : value.getTime();
     }
 }

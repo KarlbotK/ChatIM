@@ -14,6 +14,49 @@ export type InviteGroupResult = {
   failedIds: string[];
 };
 
+export type SessionParticipant = {
+  userId: string;
+  nickname: string;
+  avatar?: string | null;
+  description?: string | null;
+};
+
+export type SessionDetail = {
+  sessionId: string;
+  sessionType: number;
+  name: string;
+  avatar?: string | null;
+  announcement?: string | null;
+  peer?: SessionParticipant | null;
+  ownerId?: string | null;
+  memberCount?: number | null;
+  currentUserRole?: number | null;
+  currentUserMember: boolean;
+  pinned: boolean;
+  muted: boolean;
+  lastReadMessageId?: string | null;
+  createdTime: number;
+  updatedTime: number;
+};
+
+export type GroupMemberResult = {
+  userId: string;
+  nickname: string;
+  groupNickname?: string | null;
+  avatar?: string | null;
+  description?: string | null;
+  role: number;
+  status: number;
+  joinedTime: number;
+};
+
+export type GroupMemberPage = {
+  items: GroupMemberResult[];
+  nextCursor?: string | null;
+  hasMore: boolean;
+  serverTime: number;
+};
+
 type ApiResponse<T> = {
   code: number;
   data: T;
@@ -39,6 +82,7 @@ async function request<T>(session: AuthSession, path: string, init: RequestInit)
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
+        Authorization: `Bearer ${session.accessToken}`,
         "Access-Token": session.accessToken,
         "Refresh-Token": session.refreshToken,
         ...init.headers,
@@ -90,7 +134,6 @@ export async function createGroup(session: AuthSession, memberIds: string[]) {
   return request<CreateGroupResult>(session, "/api/group", {
     method: "POST",
     body: JSON.stringify({
-      creatorId: session.userId,
       memberIds,
     }),
   });
@@ -110,8 +153,46 @@ export async function inviteGroupMembers(session: AuthSession, sessionId: string
     method: "POST",
     body: JSON.stringify({
       sessionId,
-      inviterId: session.userId,
       inviteeIds,
     }),
   });
+}
+
+export async function fetchSessionDetail(session: AuthSession, sessionId: string) {
+  return request<SessionDetail>(session, `/api/session/${encodeURIComponent(sessionId)}`, {
+    method: "GET",
+  });
+}
+
+export async function fetchGroupMembers(
+  session: AuthSession,
+  sessionId: string,
+  cursor: string | null = null,
+  limit = 50,
+) {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (cursor) query.set("cursor", cursor);
+  return request<GroupMemberPage>(
+    session,
+    `/api/group/${encodeURIComponent(sessionId)}/members?${query}`,
+    { method: "GET" },
+  );
+}
+
+export async function fetchAllGroupMembers(session: AuthSession, sessionId: string) {
+  const members: GroupMemberResult[] = [];
+  let cursor: string | null = null;
+  let pageCount = 0;
+  do {
+    const page = await fetchGroupMembers(session, sessionId, cursor);
+    members.push(...page.items);
+    pageCount += 1;
+    if (!page.hasMore) break;
+    const nextCursor = page.nextCursor || null;
+    if (!nextCursor || nextCursor === cursor || pageCount >= 100) {
+      throw new GroupApiError("群成员列表没有完整返回，请稍后重试");
+    }
+    cursor = nextCursor;
+  } while (true);
+  return members;
 }
