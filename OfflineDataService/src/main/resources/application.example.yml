@@ -39,6 +39,7 @@ server:
   port: ${SERVER_PORT:8101}
 
 canal:
+  enabled: ${CANAL_ENABLED:true}
   server:
     host: ${CANAL_HOST:localhost}
     port: ${CANAL_PORT:11111}

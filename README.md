@@ -4,7 +4,7 @@ ChatIM 是一个正在迭代中的分布式即时通讯项目。仓库中的 Mav
 
 项目包含基于 Spring Boot 的微服务后端、Netty WebSocket 实时通信、Kafka 消息链路、Redis 在线路由、MySQL 消息与业务数据、MinIO 图片上传，以及一个可直接运行的移动端交互原型。
 
-> 当前版本适合本地开发、产品演示和接口联调。可靠消息 ACK 已接入；服务端同步游标、完整会话摘要及部分群管理能力仍在下一轮计划中。
+> 当前版本适合本地开发、产品演示和接口联调。可靠消息 ACK、发送幂等、结果查询和服务端离线同步游标已经接入；完整会话摘要、服务端未读数及部分群管理能力仍在下一轮计划中。
 
 ## 当前能力
 
@@ -20,7 +20,8 @@ ChatIM 是一个正在迭代中的分布式即时通讯项目。仓库中的 Mav
 - 图片校验、压缩、预签名上传、图片气泡和全屏预览。
 - WebSocket 心跳、断线检测和指数退避重连。
 - 实时消息按 `clientMessageId` 归并，离线和历史消息按 `messageId` 去重。
-- 离线消息补拉和历史消息分页入口。
+- 基于账号签名游标的离线消息分页同步，完整数据回源 MySQL。
+- 历史消息分页入口。
 - 会话草稿、最近消息和本地未读状态恢复。
 
 ### 分布式基础能力
@@ -165,6 +166,7 @@ $env:REDIS_PASSWORD=""
 
 $env:KAFKA_BOOTSTRAP_SERVERS="localhost:9092"
 $env:NACOS_SERVER_ADDR="localhost:18375"
+$env:CANAL_ENABLED="true"
 
 $env:MINIO_URL="http://localhost:9000"
 $env:MINIO_ACCESS_KEY="your-access-key"
@@ -278,16 +280,20 @@ VITE_DEMO_MODE=false
 mvn test
 ```
 
+上下文测试会关闭 `OfflineDataService` 的 Canal 客户端和 `RealTimeService` 的 Redis 跨实例订阅，因此执行 `mvn test` 不要求启动这两项外部连接。开发环境如暂时不验证 Redis 热数据同步，可设置 `CANAL_ENABLED=false`；部署环境默认启用完整链路。
+
 ### 前端
 
 ```powershell
 cd ChatIMMobile
+npx playwright install chromium
 npm run check:runtime
 npm run build
 npm run test:runtime
+npm run test:sites
 ```
 
-`check:runtime` 用于确认移动设备框架、状态栏、键盘和安全区等受保护运行时文件没有被意外修改。
+首次运行 Playwright 前需要安装与项目版本匹配的 Chromium。`check:runtime` 用于确认移动设备框架、状态栏、键盘和安全区等受保护运行时文件没有被意外修改；`test:runtime` 验证滑动、键盘、安全区、BottomSheet 和页面栈交互；`test:sites` 验证静态资源与单页路由回退。
 
 ## 主要接口
 
@@ -304,10 +310,10 @@ HTTP 请求通过 Gateway 的 `http://localhost:10010` 访问。
 | 浏览器 WebSocket ticket | `POST /api/user/ws-ticket` |
 | WebSocket | `/ws/netty`，当前直连 RealTimeService |
 
-认证头沿用当前接口约定：
+HTTP 接口推荐使用标准 Bearer 认证，同时兼容现有 `Access-Token` 请求头：
 
 ```text
-Access-Token: <accessToken>
+Authorization: Bearer <accessToken>
 Refresh-Token: <refreshToken>
 ```
 

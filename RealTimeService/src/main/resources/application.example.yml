@@ -48,6 +48,8 @@ netty:
 realtime:
   instance-id: ${REALTIME_INSTANCE_ID:realtime-${NETTY_SERVER_PORT:9101}}
   route-ttl-seconds: ${REALTIME_ROUTE_TTL_SECONDS:60}
+  redis-push:
+    enabled: ${REALTIME_REDIS_PUSH_ENABLED:true}
 
 snowflake:
   workerId: ${SNOWFLAKE_WORKER_ID:1}
