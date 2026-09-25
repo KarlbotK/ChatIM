@@ -8,7 +8,12 @@ import com.goat.common.constant.CommonConstant;
 import com.goat.common.constant.SessionTypeConstant;
 import com.goat.common.enums.UserSessionStatusEnum;
 import com.goat.common.exception.ThrowUtils;
+import com.goat.common.model.dto.SessionMessageSummaryRequest;
+import com.goat.common.model.dto.SessionReadPosition;
+import com.goat.common.model.vo.MessageResponse;
+import com.goat.common.model.vo.SessionMessageSummary;
 import com.goat.common.utils.SnowflakeUtil;
+import com.goat.userservice.client.OfflineMessageClient;
 import com.goat.userservice.constants.FriendStatusEnum;
 import com.goat.userservice.mapper.FriendMapper;
 import com.goat.userservice.mapper.SessionMapper;
@@ -16,6 +21,9 @@ import com.goat.userservice.mapper.UserSessionMapper;
 import com.goat.userservice.model.dto.NewGroupSessionNotificationDTO;
 import com.goat.userservice.model.dto.request.CreateGroupRequest;
 import com.goat.userservice.model.dto.response.CreateGroupResponse;
+import com.goat.userservice.model.dto.response.SessionListResponse;
+import com.goat.userservice.model.dto.response.SessionReadResponse;
+import com.goat.userservice.model.dto.response.SessionSummaryResponse;
 import com.goat.userservice.model.entity.Friend;
 import com.goat.userservice.model.entity.Session;
 import com.goat.userservice.model.entity.User;
@@ -23,6 +31,7 @@ import com.goat.userservice.model.entity.UserSession;
 import com.goat.userservice.service.NotificationService;
 import com.goat.userservice.service.SessionService;
 import com.goat.userservice.utils.OssUtils;
+import com.goat.userservice.utils.SessionCursorCodec;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
@@ -42,19 +51,25 @@ public class SessionServiceImpl extends ServiceImpl<SessionMapper, Session>
     private final UserSessionMapper userSessionMapper;
     private final NotificationService notificationService;
     private final OssUtils ossUtils;
+    private final OfflineMessageClient offlineMessageClient;
+    private final SessionCursorCodec sessionCursorCodec;
 
     public SessionServiceImpl(SessionMapper sessionMapper,
                               UserServiceImpl userService,
                               FriendMapper friendMapper,
                               UserSessionMapper userSessionMapper,
                               NotificationService notificationService,
-                              OssUtils ossUtils) {
+                              OssUtils ossUtils,
+                              OfflineMessageClient offlineMessageClient,
+                              SessionCursorCodec sessionCursorCodec) {
         this.sessionMapper = sessionMapper;
         this.userService = userService;
         this.friendMapper = friendMapper;
         this.userSessionMapper=userSessionMapper;
         this.notificationService=notificationService;
         this.ossUtils=ossUtils;
+        this.offlineMessageClient = offlineMessageClient;
+        this.sessionCursorCodec = sessionCursorCodec;
     }
 
     private static final int USER_ROLE_GROUP_OWNER = 0;
@@ -66,6 +81,196 @@ public class SessionServiceImpl extends ServiceImpl<SessionMapper, Session>
 
     private String defaultGroupAvatarUrl() {
         return ossUtils.downUrl(CommonConstant.BUCKET_NAME, DEFAULT_GROUP_AVATAR_OBJECT_NAME);
+    }
+
+    @Override
+    public SessionListResponse listSessions(Long userId, String cursorValue, Integer requestedLimit) {
+        int limit = Math.max(1, Math.min(
+                requestedLimit == null ? CommonConstant.DEFAULT_LIMIT : requestedLimit,
+                100
+        ));
+        SessionCursorCodec.SessionCursor cursor = sessionCursorCodec.decode(cursorValue, userId);
+
+        LambdaQueryWrapper<UserSession> membershipQuery = new LambdaQueryWrapper<>();
+        membershipQuery.eq(UserSession::getUserId, userId)
+                .eq(UserSession::getStatus, SESSION_STATUS_NORMAL)
+                .and(wrapper -> wrapper.eq(UserSession::getHidden, false)
+                        .or()
+                        .isNull(UserSession::getHidden));
+        List<UserSession> memberships = userSessionMapper.selectList(membershipQuery);
+        if (memberships.isEmpty()) {
+            return SessionListResponse.builder()
+                    .items(Collections.emptyList())
+                    .nextCursor(cursorValue)
+                    .hasMore(false)
+                    .serverTime(System.currentTimeMillis())
+                    .build();
+        }
+
+        List<Long> sessionIds = memberships.stream().map(UserSession::getSessionId).toList();
+        Map<Long, UserSession> membershipBySession = memberships.stream()
+                .collect(Collectors.toMap(UserSession::getSessionId, membership -> membership));
+
+        SessionMessageSummaryRequest messageRequest = new SessionMessageSummaryRequest();
+        messageRequest.setUserId(userId);
+        messageRequest.setSessions(memberships.stream()
+                .map(membership -> new SessionReadPosition(
+                        membership.getSessionId(),
+                        membership.getLastReadMessageId()
+                ))
+                .toList());
+        Map<Long, SessionMessageSummary> messageBySession = offlineMessageClient
+                .getSessionMessageSummaries(messageRequest)
+                .stream()
+                .collect(Collectors.toMap(SessionMessageSummary::getSessionId, summary -> summary));
+
+        Map<Long, Session> sessionById = sessionMapper.selectByIds(sessionIds).stream()
+                .filter(session -> session.getStatus() != null && session.getStatus() == SESSION_STATUS_NORMAL)
+                .collect(Collectors.toMap(Session::getSessionId, session -> session));
+        LambdaQueryWrapper<UserSession> allMembersQuery = new LambdaQueryWrapper<>();
+        allMembersQuery.in(UserSession::getSessionId, sessionIds)
+                .eq(UserSession::getStatus, SESSION_STATUS_NORMAL);
+        List<UserSession> allMembers = userSessionMapper.selectList(allMembersQuery);
+        Map<Long, List<UserSession>> membersBySession = allMembers.stream()
+                .collect(Collectors.groupingBy(UserSession::getSessionId));
+        Set<Long> peerIds = allMembers.stream()
+                .filter(membership -> !userId.equals(membership.getUserId()))
+                .map(UserSession::getUserId)
+                .collect(Collectors.toSet());
+        Map<Long, User> usersById = peerIds.isEmpty()
+                ? Collections.emptyMap()
+                : userService.listByIds(peerIds).stream()
+                        .collect(Collectors.toMap(User::getUserId, user -> user));
+
+        List<SessionSummaryResponse> summaries = new ArrayList<>();
+        for (Long sessionId : sessionIds) {
+            Session session = sessionById.get(sessionId);
+            if (session == null) {
+                continue;
+            }
+            UserSession membership = membershipBySession.get(sessionId);
+            List<UserSession> members = membersBySession.getOrDefault(sessionId, Collections.emptyList());
+            User peer = session.getType() != null && session.getType() == SessionTypeConstant.SIGNAL_TYPE
+                    ? members.stream()
+                            .map(UserSession::getUserId)
+                            .filter(memberId -> !userId.equals(memberId))
+                            .map(usersById::get)
+                            .filter(Objects::nonNull)
+                            .findFirst()
+                            .orElse(null)
+                    : null;
+            SessionMessageSummary messageSummary = messageBySession.get(sessionId);
+            MessageResponse lastMessage = messageSummary == null ? null : messageSummary.getLastMessage();
+            long lastMessageTime = lastMessage == null || lastMessage.getCreatedTime() == null
+                    ? dateValue(session.getUpdatedTime(), session.getCreatedTime())
+                    : lastMessage.getCreatedTime();
+            summaries.add(SessionSummaryResponse.builder()
+                    .sessionId(sessionId)
+                    .sessionType(session.getType())
+                    .name(peer == null ? session.getName() : peer.getNickname())
+                    .avatar(peer == null ? session.getAvatar() : peer.getAvatar())
+                    .peerId(peer == null ? null : peer.getUserId())
+                    .lastMessage(lastMessage)
+                    .lastMessageId(lastMessage == null ? null : lastMessage.getMessageId())
+                    .lastMessageTime(lastMessageTime)
+                    .unreadCount(messageSummary == null ? 0L : messageSummary.getUnreadCount())
+                    .pinned(Boolean.TRUE.equals(membership.getPinned()))
+                    .muted(Boolean.TRUE.equals(membership.getMuted()))
+                    .memberCount(session.getType() != null && session.getType() == SessionTypeConstant.GROUP_TYPE
+                            ? members.size() : null)
+                    .currentUserRole(session.getType() != null && session.getType() == SessionTypeConstant.GROUP_TYPE
+                            ? membership.getRole() : null)
+                    .lastReadMessageId(membership.getLastReadMessageId())
+                    .updatedTime(Math.max(
+                            lastMessageTime,
+                            dateValue(membership.getUpdatedTime(), membership.getCreatedTime())
+                    ))
+                    .build());
+        }
+
+        Comparator<SessionSummaryResponse> order = Comparator
+                .comparing(SessionSummaryResponse::isPinned).reversed()
+                .thenComparing(
+                        SessionSummaryResponse::getLastMessageTime,
+                        Comparator.nullsLast(Comparator.reverseOrder())
+                )
+                .thenComparing(SessionSummaryResponse::getSessionId, Comparator.reverseOrder());
+        List<SessionSummaryResponse> ordered = summaries.stream()
+                .sorted(order)
+                .filter(summary -> isAfterCursor(summary, cursor))
+                .toList();
+        boolean hasMore = ordered.size() > limit;
+        List<SessionSummaryResponse> page = new ArrayList<>(
+                ordered.subList(0, Math.min(limit, ordered.size()))
+        );
+        String nextCursor = cursorValue;
+        if (!page.isEmpty()) {
+            SessionSummaryResponse last = page.get(page.size() - 1);
+            nextCursor = sessionCursorCodec.encode(
+                    userId,
+                    last.isPinned(),
+                    last.getLastMessageTime() == null ? 0L : last.getLastMessageTime(),
+                    last.getSessionId()
+            );
+        }
+        return SessionListResponse.builder()
+                .items(page)
+                .nextCursor(nextCursor)
+                .hasMore(hasMore)
+                .serverTime(System.currentTimeMillis())
+                .build();
+    }
+
+    @Override
+    public SessionReadResponse markRead(Long userId, Long sessionId, Long lastReadMessageId) {
+        LambdaQueryWrapper<UserSession> membershipQuery = new LambdaQueryWrapper<>();
+        membershipQuery.eq(UserSession::getUserId, userId)
+                .eq(UserSession::getSessionId, sessionId)
+                .eq(UserSession::getStatus, SESSION_STATUS_NORMAL);
+        UserSession membership = userSessionMapper.selectOne(membershipQuery);
+        ThrowUtils.throwIf(membership == null, ErrorCode.MESSAGE_NOT_IN_SESSION);
+        ThrowUtils.throwIf(!offlineMessageClient.isMessageInSession(sessionId, lastReadMessageId),
+                ErrorCode.READ_POSITION_INVALID);
+
+        userSessionMapper.advanceReadPosition(userId, sessionId, lastReadMessageId);
+        UserSession updatedMembership = userSessionMapper.selectOne(membershipQuery);
+        ThrowUtils.throwIf(updatedMembership == null || updatedMembership.getLastReadMessageId() == null,
+                ErrorCode.OPERATION_ERROR);
+        long effectiveReadMessageId = updatedMembership.getLastReadMessageId();
+
+        SessionMessageSummaryRequest summaryRequest = new SessionMessageSummaryRequest();
+        summaryRequest.setUserId(userId);
+        summaryRequest.setSessions(List.of(new SessionReadPosition(sessionId, effectiveReadMessageId)));
+        long unreadCount = offlineMessageClient.getSessionMessageSummaries(summaryRequest).stream()
+                .findFirst()
+                .map(SessionMessageSummary::getUnreadCount)
+                .orElse(0L);
+        return SessionReadResponse.builder()
+                .sessionId(sessionId)
+                .lastReadMessageId(effectiveReadMessageId)
+                .unreadCount(unreadCount)
+                .build();
+    }
+
+    private boolean isAfterCursor(
+            SessionSummaryResponse summary,
+            SessionCursorCodec.SessionCursor cursor) {
+        if (cursor == null) {
+            return true;
+        }
+        if (summary.isPinned() != cursor.pinned()) {
+            return !summary.isPinned() && cursor.pinned();
+        }
+        long summaryTime = summary.getLastMessageTime() == null ? 0L : summary.getLastMessageTime();
+        if (summaryTime != cursor.lastMessageTime()) {
+            return summaryTime < cursor.lastMessageTime();
+        }
+        return summary.getSessionId() < cursor.sessionId();
+    }
+
+    private long dateValue(Date primary, Date fallback) {
+        Date value = primary == null ? fallback : primary;
+        return value == null ? 0L : value.getTime();
     }
 
 

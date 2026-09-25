@@ -449,7 +449,7 @@ disconnected -> connecting -> connected -> reconnecting -> connected
 - 心跳使用文本帧 `ping`，服务端回复文本 `pong`；协议控制帧 Ping 不能替代路由续期。默认 60 秒 TTL 下可每 20 秒发送一次，具体间隔随后端配置调整；
 - App 后台暂停心跳或间隔超过 TTL 后，回到前台重新握手再补拉。路由已过期时，旧连接仅发送 ping 不会重新登记路由；
 - 连接失败不能无限弹窗，页面顶部显示轻量网络状态；
-- 重连成功后补拉聊天消息并刷新好友申请；未读同步接口补齐前使用本地未读数；
+- 重连成功后补拉聊天消息、刷新会话摘要和好友申请；会话未读数以后端结果校正；
 - 发送中的消息保留在本地，不能因为 WebSocket 断开直接丢失。
 
 ### 7.3 消息结构
@@ -552,7 +552,7 @@ disconnected -> connecting -> connected -> reconnecting -> connected
 - 长按进入多选；
 - 点击进入聊天详情。
 
-当前后端缺少会话列表聚合接口，因此前端不能只依赖 `/get/sessions`。需要新增会话摘要接口。
+会话列表通过 `GET /api/session/list` 获取服务端摘要，`/get/sessions` 只保留为服务间辅助接口，不作为页面契约。
 
 ### 8.4 单聊页
 
@@ -691,7 +691,7 @@ disconnected -> connecting -> connected -> reconnecting -> connected
 
 这些接口中的当前用户都应从 JWT 获取，不能依赖请求体中的 userId。
 
-服务归属沿用现有架构：`/api/session/**` 和群成员管理归 UserService，消息历史与查询归 OfflineDataService；待新增的已读位置建议由 UserService 持有，未读查询按该位置聚合。通知历史建议由 UserService 补齐独立存储和查询。新增 `/api/session/**`、`/api/notification/**` 时同步补 Gateway 路由。发送 ack 是服务端结果，不能由客户端 POST 一个确认来代替落库证明；接收回执、已读回执需另定协议。
+服务归属沿用现有架构：`/api/session/**` 和群成员管理归 UserService，消息历史与查询归 OfflineDataService；已读位置由 UserService 持有，OfflineDataService 按该位置聚合未读数。通知历史建议由 UserService 补齐独立存储和查询。新增 `/api/notification/**` 时同步补 Gateway 路由。发送 ack 是服务端结果，不能由客户端 POST 一个确认来代替落库证明；接收回执需另定协议。
 
 ### 9.2 P1，影响微信式体验
 
@@ -820,7 +820,7 @@ status: 0 | 1
 
 ### 11.3 未读数
 
-当前后端还没有完整的未读数接口，前端第一版可以本地累计，但正式版本必须以后端为准：
+后端已经提供会话摘要与未读数接口，前端实时累计只用于即时反馈，冷启动与重连必须以后端为准：
 
 - 每个会话保存 lastReadMessageId 或 lastReadTime；
 - 进入会话时提交已读；
@@ -959,9 +959,9 @@ status: 0 | 1
 1. 确认 `nettyUri` 返回真实 WebSocket 端口；
 2. HTTP 保留 Access-Token / Refresh-Token 兼容，WebSocket 移动端使用 Bearer Header，浏览器使用一次性短期 ticket；
 3. HTTP 操作者身份取自 JWT、WebSocket 发送者取自已鉴权 Channel，并校验会话权限；
-4. 增加会话摘要、会话详情和同步保障；服务端未读数启用前明确本地统计限制；
+4. 会话摘要、已读位置、服务端未读数和同步保障已完成，下一步补会话详情；
 5. V0.2 再补齐群成员、群头像、群设置和退出群聊接口；
-6. 普通消息持久化幂等、WebSocket 发送确认和超时结果查询已完成，仍需补齐已读接口；
+6. 普通消息持久化幂等、WebSocket 发送确认、超时结果查询和已读接口已完成；
 7. 确认图片对象的公开访问策略，生产环境不要把 localhost 地址写入数据库；
 8. 按当前方案使用 RealTimeService 消费后查询 Redis 路由并转发；前端只依赖稳定的 `nettyUri` 和重连/离线补拉协议，暂不增加 PushRouter；
 9. 消息重复、重试和离线补拉的幂等规则已明确，后续公开接口沿用同一身份与游标约束；
@@ -971,7 +971,7 @@ status: 0 | 1
 
 第一轮不追求页面数量，而是要求一条链路完整：
 
-以下是联调交付目标；会话摘要、发送确认/幂等和可靠补拉等缺口按第 9、15 节补齐后验收，不能把客户端页面完成当作后端能力已经完成。
+以下是联调交付目标；会话摘要、发送确认/幂等和可靠补拉已经具备，仍需通过双账号与断线场景完成端到端验收。
 
 - 能注册并登录；
 - 能进入主页面；

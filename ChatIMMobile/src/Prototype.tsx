@@ -97,6 +97,11 @@ import {
   type RealtimeMessage,
   type RealtimeMessageAck,
 } from "./realtime";
+import {
+  fetchSessionList,
+  markSessionRead,
+  type SessionSummary,
+} from "./sessions";
 
 type Phase = "booting" | "signed-out" | "signed-in";
 type LoginMode = "password" | "code";
@@ -724,6 +729,8 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
   const conversationsRef = useRef(conversations);
   const messagesRef = useRef(messages);
   const syncOfflineRef = useRef<(() => Promise<void>) | null>(null);
+  const syncSessionSummariesRef = useRef<(() => Promise<void>) | null>(null);
+  const submittedReadPositionsRef = useRef<Record<string, string>>({});
   const activeConversationIdRef = useRef<string | null>(null);
   const offlineCursorRef = useRef<string | null>(loadOfflineCursor(session.userId));
   const seenServerKeysRef = useRef<Set<string> | null>(null);
@@ -750,6 +757,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
 
   const unreadTotal = conversations.reduce((total, item) => total + item.unread, 0);
   const activeConversation = conversations.find((item) => item.id === activeConversationId) ?? null;
+  const activeLastMessageId = activeConversation?.lastMessageId;
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filteredConversations = conversations.filter((item) =>
     `${item.name} ${item.preview}`.toLocaleLowerCase().includes(normalizedQuery),
@@ -825,7 +833,8 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
             ...existing,
             preview,
             time: formatConversationTime(latest.createdTime),
-            unread: active ? 0 : existing.unread + incomingCount,
+            unread: active && demoModeEnabled ? 0 : existing.unread + incomingCount,
+            lastMessageId: latest.messageId == null ? existing.lastMessageId : String(latest.messageId),
             failed: false,
           };
           nextConversations.splice(currentIndex, 1);
@@ -843,7 +852,8 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
             avatarTone: contact?.avatarTone || toneFromId(sessionId),
             preview,
             time: formatConversationTime(latest.createdTime),
-            unread: active ? 0 : incomingCount,
+            unread: active && demoModeEnabled ? 0 : incomingCount,
+            lastMessageId: latest.messageId == null ? undefined : String(latest.messageId),
             presence: contact?.presence,
             peerId: contact?.id || (latest.sessionType === 0 && String(latest.senderId) !== String(session.userId)
               ? String(latest.senderId)
@@ -954,6 +964,52 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
     saveGroups(session.userId, groups);
   }, [groups, session.userId]);
 
+  syncSessionSummariesRef.current = async () => {
+    if (demoModeEnabled) return;
+    const summaries: SessionSummary[] = [];
+    let cursor: string | null = null;
+    let pageCount = 0;
+    do {
+      const page = await fetchSessionList(session, cursor);
+      summaries.push(...page.items);
+      pageCount += 1;
+      if (!page.hasMore) break;
+      const nextCursor = page.nextCursor || null;
+      if (!nextCursor || nextCursor === cursor || pageCount >= 20) break;
+      cursor = nextCursor;
+    } while (true);
+
+    const current = conversationsRef.current;
+    const next = summaries.map((summary) => {
+      const id = String(summary.sessionId);
+      const existing = current.find((conversation) => conversation.id === id);
+      const name = summary.name?.trim() || existing?.name || (summary.sessionType === 1 ? "群聊" : "新消息");
+      const lastMessage = summary.lastMessage || null;
+      return {
+        ...existing,
+        id,
+        name,
+        avatar: existing?.avatar || name.slice(0, 1) || (summary.sessionType === 1 ? "群" : "友"),
+        avatarTone: existing?.avatarTone || toneFromId(id),
+        preview: lastMessage ? realtimePreview(lastMessage) : existing?.preview || "还没有消息",
+        time: formatConversationTime(summary.lastMessageTime || summary.updatedTime || undefined),
+        unread: Math.max(0, summary.unreadCount || 0),
+        muted: summary.muted,
+        pinned: summary.pinned,
+        group: summary.sessionType === 1,
+        membersCount: summary.memberCount ?? existing?.membersCount,
+        peerId: summary.peerId == null ? existing?.peerId : String(summary.peerId),
+        lastMessageId: summary.lastMessageId == null ? existing?.lastMessageId : String(summary.lastMessageId),
+        lastReadMessageId: summary.lastReadMessageId == null
+          ? existing?.lastReadMessageId
+          : String(summary.lastReadMessageId),
+      } satisfies Conversation;
+    });
+    conversationsRef.current = next;
+    setConversations(next);
+    saveChatState(session.userId, next, messagesRef.current);
+  };
+
   useEffect(() => {
     let active = true;
     let syncRun = 0;
@@ -1020,6 +1076,9 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
       },
       onConnected: () => {
         if (!active) return;
+        void syncSessionSummariesRef.current?.().catch(() => {
+          // Keep the local cache visible while the session summary service is unavailable.
+        });
         void syncOffline();
         void reconcilePendingMessageStatuses();
         if (!demoModeEnabled) {
@@ -1057,6 +1116,42 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
       if (syncOfflineRef.current === syncOffline) syncOfflineRef.current = null;
     };
   }, [session.accessToken, session.nettyUri, session.refreshToken, session.userId]);
+
+  useEffect(() => {
+    if (demoModeEnabled || !activeConversationId) return;
+    const lastMessageId = activeLastMessageId;
+    if (!lastMessageId || submittedReadPositionsRef.current[activeConversationId] === lastMessageId) return;
+
+    let active = true;
+    submittedReadPositionsRef.current[activeConversationId] = lastMessageId;
+    void markSessionRead(session, activeConversationId, lastMessageId)
+      .then((result) => {
+        if (!active) return;
+        const confirmedReadId = String(result.lastReadMessageId);
+        setConversations((items) => items.map((item) => item.id === activeConversationId
+          ? {
+              ...item,
+              unread: Math.max(0, result.unreadCount || 0),
+              lastReadMessageId: confirmedReadId,
+            }
+          : item));
+      })
+      .catch(() => {
+        if (submittedReadPositionsRef.current[activeConversationId] === lastMessageId) {
+          delete submittedReadPositionsRef.current[activeConversationId];
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [
+    activeConversationId,
+    activeLastMessageId,
+    session.accessToken,
+    session.refreshToken,
+    session.userId,
+  ]);
 
   useEffect(() => {
     if (demoModeEnabled) return;
@@ -1135,9 +1230,11 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
 
   const openConversation = (conversationId: string) => {
     keyboard.hide();
-    setConversations((items) =>
-      items.map((item) => item.id === conversationId ? { ...item, unread: 0 } : item),
-    );
+    if (demoModeEnabled) {
+      setConversations((items) =>
+        items.map((item) => item.id === conversationId ? { ...item, unread: 0 } : item),
+      );
+    }
     setActiveConversationId(conversationId);
   };
 
@@ -1688,6 +1785,8 @@ type Conversation = {
   group?: boolean;
   membersCount?: number;
   peerId?: string;
+  lastMessageId?: string;
+  lastReadMessageId?: string;
 };
 
 type GroupMember = {

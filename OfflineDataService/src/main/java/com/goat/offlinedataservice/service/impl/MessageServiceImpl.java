@@ -12,14 +12,18 @@ import com.goat.common.constant.MessageDeliveryStatus;
 import com.goat.common.exception.ThrowUtils;
 import com.goat.common.model.dto.MessageBody;
 import com.goat.common.model.dto.MessageRequest;
+import com.goat.common.model.dto.SessionMessageSummaryRequest;
+import com.goat.common.model.dto.SessionReadPosition;
 import com.goat.common.model.vo.MessageResponse;
 import com.goat.common.model.vo.MessageDeliveryRecord;
+import com.goat.common.model.vo.SessionMessageSummary;
 import com.goat.offlinedataservice.client.UserServiceClient;
 import com.goat.offlinedataservice.mapper.MessageMapper;
 import com.goat.offlinedataservice.model.dto.HistoryMessageRequest;
 import com.goat.offlinedataservice.model.dto.MessagePersistResult;
 import com.goat.offlinedataservice.model.dto.OfflineMessageRequest;
 import com.goat.offlinedataservice.model.dto.OfflineSyncRequest;
+import com.goat.offlinedataservice.model.dto.SessionUnreadCount;
 import com.goat.offlinedataservice.model.entity.Message;
 import com.goat.offlinedataservice.model.vo.OfflineSyncResponse;
 import com.goat.offlinedataservice.service.MessageService;
@@ -32,6 +36,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 
 @Service
@@ -78,6 +83,72 @@ public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message>
 
     @Resource
     private OfflineCursorCodec offlineCursorCodec;
+
+    @Override
+    public List<SessionMessageSummary> getSessionMessageSummaries(SessionMessageSummaryRequest request) {
+        if (request == null || request.getUserId() == null
+                || request.getSessions() == null || request.getSessions().isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        List<SessionReadPosition> positions = request.getSessions().stream()
+                .filter(Objects::nonNull)
+                .filter(position -> position.getSessionId() != null)
+                .toList();
+        if (positions.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        List<Long> sessionIds = positions.stream()
+                .map(SessionReadPosition::getSessionId)
+                .distinct()
+                .toList();
+        Map<Long, MessageResponse> latestMessages = convertToResponses(
+                messageMapper.selectLatestBySessionIds(sessionIds)
+        ).stream().collect(Collectors.toMap(MessageResponse::getSessionId, response -> response));
+        Map<Long, Long> unreadCounts = messageMapper
+                .selectUnreadCounts(request.getUserId(), positions)
+                .stream()
+                .collect(Collectors.toMap(
+                        SessionUnreadCount::getSessionId,
+                        count -> count.getUnreadCount() == null ? 0L : count.getUnreadCount()
+                ));
+
+        return sessionIds.stream()
+                .map(sessionId -> SessionMessageSummary.builder()
+                        .sessionId(sessionId)
+                        .lastMessage(latestMessages.get(sessionId))
+                        .unreadCount(unreadCounts.getOrDefault(sessionId, 0L))
+                        .build())
+                .toList();
+    }
+
+    @Override
+    public boolean isMessageInSession(Long sessionId, Long messageId) {
+        if (sessionId == null || messageId == null) {
+            return false;
+        }
+        QueryWrapper<Message> queryWrapper = new QueryWrapper<>();
+        queryWrapper.eq("session_id", sessionId)
+                .eq("message_id", messageId);
+        return messageMapper.selectCount(queryWrapper) > 0;
+    }
+
+    @Override
+    public Map<Long, Long> getUnreadCounts(Long userId) {
+        List<SessionReadPosition> positions = userServiceClient.getReadPositions(userId);
+        if (positions == null || positions.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        SessionMessageSummaryRequest request = new SessionMessageSummaryRequest();
+        request.setUserId(userId);
+        request.setSessions(positions);
+        return getSessionMessageSummaries(request).stream()
+                .collect(Collectors.toMap(
+                        SessionMessageSummary::getSessionId,
+                        SessionMessageSummary::getUnreadCount
+                ));
+    }
 
     @Override
     public OfflineSyncResponse syncOfflineMessages(Long userId, OfflineSyncRequest request) {

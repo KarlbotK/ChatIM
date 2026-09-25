@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 
 import com.goat.common.enums.UserSessionStatusEnum;
+import com.goat.common.model.dto.SessionReadPosition;
 import com.goat.userservice.mapper.UserSessionMapper;
 import com.goat.userservice.model.entity.UserSession;
 import com.goat.userservice.service.UserSessionService;
@@ -45,5 +46,21 @@ public class UserSessionServiceImpl extends ServiceImpl<UserSessionMapper, UserS
         wrapper.eq(UserSession::getSessionId,sessionId)
                 .eq(UserSession::getStatus, UserSessionStatusEnum.NORMAL.getCode());
         return Math.toIntExact(this.count(wrapper));
+    }
+
+    @Override
+    public List<SessionReadPosition> getReadPositions(Long userId) {
+        LambdaQueryWrapper<UserSession> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(UserSession::getUserId, userId)
+                .eq(UserSession::getStatus, UserSessionStatusEnum.NORMAL.getCode())
+                .and(query -> query.eq(UserSession::getHidden, false)
+                        .or()
+                        .isNull(UserSession::getHidden));
+        return this.list(wrapper).stream()
+                .map(membership -> new SessionReadPosition(
+                        membership.getSessionId(),
+                        membership.getLastReadMessageId()
+                ))
+                .toList();
     }
 }

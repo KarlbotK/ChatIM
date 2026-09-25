@@ -12,7 +12,7 @@
 - 群聊列表、好友多选建群、部分失败结果、群资料，以及群主继续邀请好友；
 - 聊天图片选择、格式与大小校验、最长边压缩、上传进度、图片气泡和全屏预览；
 - WebSocket 实时收发、心跳保活、指数退避重连和服务端回推确认；
-- 登录及重连后的离线消息补拉、按消息编号去重，以及向上加载历史消息；
+- 登录及重连后的会话摘要同步、服务端未读数校正、已读位置提交、离线消息补拉、按消息编号去重，以及向上加载历史消息；
 - 发现页和个人中心的第一版信息架构；
 - 按账号保存草稿、最近会话和消息，刷新后可以恢复；
 - iPhone 和 Pixel 10 两种设备预览，以及键盘顶起和安全区适配。
@@ -56,12 +56,15 @@ $env:FRONTEND_ORIGIN="http://localhost:4173"
 - `POST /api/message/offline/sync`
 - `POST /api/message/history`
 - `GET /api/message/status?clientMessageId=`
+- `GET /api/session/list?cursor=&limit=`
+- `POST /api/session/{sessionId}/read`
+- `GET /api/message/unread`
 
 当前浏览器版本用 `localStorage` 模拟移动端安全存储。正式客户端接入时应将访问令牌和刷新令牌迁移到系统安全存储。
 
 ## 当前接口边界
 
-后端目前还没有公开的会话摘要、群详情和群成员列表。消息发送会分别收到 `accepted`、`persisted` 或 `failed` ACK，前端只在 `persisted` 后显示“已发送”；ACK 超时后会查询 `/api/message/status`，无法确认时显示“结果待确认”，不会自动重复发送。
+后端已经公开会话摘要、已读位置和未读数接口，前端在冷启动与重连后以服务端会话状态为准，并在会话可见后提交最后消息 ID。群详情和群成员列表仍待补齐。消息发送会分别收到 `accepted`、`persisted` 或 `failed` ACK，前端只在 `persisted` 后显示“已发送”；ACK 超时后会查询 `/api/message/status`，无法确认时显示“结果待确认”，不会自动重复发送。
 
 WebSocket 建连后，客户端通过 `/api/message/offline/sync` 循环拉取 MySQL 中的完整消息，每页合并成功后保存当前账号专属的服务端游标，直到 `hasMore` 为 false。
 

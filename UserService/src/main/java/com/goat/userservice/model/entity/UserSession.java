@@ -48,6 +48,17 @@ public class UserSession implements Serializable {
      */
     private Date updatedTime;
 
+    /**
+     * 当前用户在会话中的最后已读消息。
+     */
+    private Long lastReadMessageId;
+
+    private Boolean pinned;
+
+    private Boolean muted;
+
+    private Boolean hidden;
+
     @TableField(exist = false)
     @Serial
     private static final long serialVersionUID = 1L;

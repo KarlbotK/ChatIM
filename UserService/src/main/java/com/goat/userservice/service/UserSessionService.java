@@ -1,6 +1,7 @@
 package com.goat.userservice.service;
 
 import com.baomidou.mybatisplus.extension.service.IService;
+import com.goat.common.model.dto.SessionReadPosition;
 import com.goat.userservice.model.entity.UserSession;
 import org.springframework.web.bind.annotation.GetMapping;
 
@@ -14,4 +15,6 @@ public interface UserSessionService extends IService<UserSession> {
     List<Long> getSessionIdsByUserId(Long userId);
 
     int getGroupMemberCount(Long sessionId);
+
+    List<SessionReadPosition> getReadPositions(Long userId);
 }

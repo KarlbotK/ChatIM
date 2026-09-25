@@ -54,6 +54,10 @@ spring:
               uri: lb://UserService
               predicates:
                 - Path=/api/group/**
+            - id: SessionService
+              uri: lb://UserService
+              predicates:
+                - Path=/api/session/**
             - id: OfflineDataService
               uri: lb://OfflineDataService
               predicates:

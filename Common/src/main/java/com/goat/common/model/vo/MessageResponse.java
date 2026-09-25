@@ -1,15 +1,19 @@
 package com.goat.common.model.vo;
 
 
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import com.goat.common.model.dto.MessageBody;
 import lombok.Data;
 
 @Data
 public class MessageResponse {
 
+    @JsonSerialize(using = ToStringSerializer.class)
     private Long sessionId;
 
 
+    @JsonSerialize(using = ToStringSerializer.class)
     private Long senderId;
 
 
@@ -23,6 +27,7 @@ public class MessageResponse {
     private Long createdTime;
 
 
+    @JsonSerialize(using = ToStringSerializer.class)
     private Long messageId;
 
 

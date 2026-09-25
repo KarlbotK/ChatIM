@@ -75,6 +75,11 @@ public class MessageController {
         return ResultUtils.success(messageService.getMessageStatus(senderId, clientMessageId));
     }
 
+    @GetMapping("/unread")
+    public BaseResponse<Map<Long, Long>> getUnreadCounts(HttpServletRequest request) {
+        return ResultUtils.success(messageService.getUnreadCounts(resolveAuthenticatedUserId(request)));
+    }
+
     private Long resolveAuthenticatedUserId(HttpServletRequest request) {
         String accessToken = AuthTokenUtil.extract(request.getHeader("Authorization"));
         if (accessToken == null) {
