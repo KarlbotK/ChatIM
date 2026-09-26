@@ -69,4 +69,14 @@ public interface UserSessionMapper extends BaseMapper<UserSession> {
             @Param("sessionId") Long sessionId,
             @Param("lastReadMessageId") Long lastReadMessageId
     );
+
+    @Update("""
+            UPDATE user_session
+            SET hidden = 0,
+                updated_time = CURRENT_TIMESTAMP
+            WHERE session_id = #{sessionId}
+              AND status = 0
+              AND hidden = 1
+            """)
+    int revealHiddenSession(@Param("sessionId") Long sessionId);
 }

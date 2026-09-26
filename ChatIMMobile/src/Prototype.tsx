@@ -113,7 +113,11 @@ import {
 } from "./realtime";
 import {
   fetchSessionList,
+  hideSession,
   markSessionRead,
+  updateSessionMuted,
+  updateSessionPinned,
+  type SessionPreferenceResult,
   type SessionSummary,
 } from "./sessions";
 
@@ -736,6 +740,9 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
   const [groups, setGroups] = useState<GroupRecord[]>(() => loadGroups(session.userId));
   const [contactSurface, setContactSurface] = useState<ContactSurface>(null);
   const [notice, setNotice] = useState("");
+  const [conversationMenuId, setConversationMenuId] = useState<string | null>(null);
+  const [preferenceBusy, setPreferenceBusy] = useState(false);
+  const [confirmHideConversation, setConfirmHideConversation] = useState(false);
   const [connectionState, setConnectionState] = useState<RealtimeConnectionState>("connecting");
   const [syncState, setSyncState] = useState<"idle" | "syncing" | "synced" | "failed">("idle");
   const [lastSyncTime, setLastSyncTime] = useState("");
@@ -746,6 +753,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
   const syncOfflineRef = useRef<(() => Promise<void>) | null>(null);
   const syncSessionSummariesRef = useRef<(() => Promise<void>) | null>(null);
   const submittedReadPositionsRef = useRef<Record<string, string>>({});
+  const pendingSessionPreferencesRef = useRef<Map<string, SessionPreferenceResult>>(new Map());
   const activeConversationIdRef = useRef<string | null>(null);
   const offlineCursorRef = useRef<string | null>(loadOfflineCursor(session.userId));
   const seenServerKeysRef = useRef<Set<string> | null>(null);
@@ -773,6 +781,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
 
   const unreadTotal = conversations.reduce((total, item) => total + item.unread, 0);
   const activeConversation = conversations.find((item) => item.id === activeConversationId) ?? null;
+  const menuConversation = conversations.find((item) => item.id === conversationMenuId) ?? null;
   const activeLastMessageId = activeConversation?.lastMessageId;
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filteredConversations = conversations.filter((item) =>
@@ -845,22 +854,28 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
         const active = activeConversationIdRef.current === sessionId;
         if (currentIndex >= 0) {
           const existing = nextConversations[currentIndex];
+          const pendingPreference = pendingSessionPreferencesRef.current.get(sessionId);
           const updated: Conversation = {
             ...existing,
+            pinned: pendingPreference?.pinned ?? existing.pinned,
+            muted: pendingPreference?.muted ?? existing.muted,
             preview,
             time: formatConversationTime(latest.createdTime),
+            activityTime: latest.createdTime || Date.now(),
             unread: active && demoModeEnabled ? 0 : existing.unread + incomingCount,
             lastMessageId: latest.messageId == null ? existing.lastMessageId : String(latest.messageId),
             failed: false,
           };
           nextConversations.splice(currentIndex, 1);
           nextConversations.unshift(updated);
+          pendingSessionPreferencesRef.current.delete(sessionId);
         } else {
           const contact = contacts.find((item) => item.conversationId === sessionId);
           const group = groups.find((item) => item.sessionId === sessionId);
           const name = group?.name
             || contact?.name
             || (latest.sessionType === 1 ? "新群聊" : latest.nickname || "新消息");
+          const pendingPreference = pendingSessionPreferencesRef.current.get(sessionId);
           nextConversations.unshift({
             id: sessionId,
             name,
@@ -869,7 +884,10 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
             avatarTone: contact?.avatarTone || toneFromId(sessionId),
             preview,
             time: formatConversationTime(latest.createdTime),
+            activityTime: latest.createdTime || Date.now(),
             unread: active && demoModeEnabled ? 0 : incomingCount,
+            pinned: pendingPreference?.pinned,
+            muted: pendingPreference?.muted,
             lastMessageId: latest.messageId == null ? undefined : String(latest.messageId),
             presence: contact?.presence,
             peerId: contact?.id || (latest.sessionType === 0 && String(latest.senderId) !== String(session.userId)
@@ -878,8 +896,10 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
             group: latest.sessionType === 1,
             membersCount: group?.memberCount ?? group?.members.length,
           });
+          pendingSessionPreferencesRef.current.delete(sessionId);
         }
       });
+      nextConversations = sortConversationList(nextConversations);
       conversationsRef.current = nextConversations;
       setConversations(nextConversations);
     }
@@ -1011,6 +1031,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
         avatarTone: existing?.avatarTone || toneFromId(id),
         preview: lastMessage ? realtimePreview(lastMessage) : existing?.preview || "还没有消息",
         time: formatConversationTime(summary.lastMessageTime || summary.updatedTime || undefined),
+        activityTime: summary.lastMessageTime || summary.updatedTime || existing?.activityTime || 0,
         unread: Math.max(0, summary.unreadCount || 0),
         muted: summary.muted,
         pinned: summary.pinned,
@@ -1025,6 +1046,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
     });
     conversationsRef.current = next;
     setConversations(next);
+    summaries.forEach((summary) => pendingSessionPreferencesRef.current.delete(String(summary.sessionId)));
     saveChatState(session.userId, next, messagesRef.current);
 
     const cachedGroups = groupsRef.current;
@@ -1078,6 +1100,67 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
       avatar: (profile.name?.trim() || item.name).slice(0, 1) || "群",
       avatarUrl: profile.avatar !== undefined ? profile.avatar : item.avatarUrl ?? null,
     } : item));
+  };
+
+  const applySessionPreference = (result: SessionPreferenceResult) => {
+    const sessionId = String(result.sessionId);
+    if (result.hidden) {
+      pendingSessionPreferencesRef.current.set(sessionId, result);
+      const next = conversationsRef.current.filter((item) => item.id !== sessionId);
+      conversationsRef.current = next;
+      setConversations(next);
+      setActiveConversationId((current) => current === sessionId ? null : current);
+      setConversationMenuId(null);
+      setConfirmHideConversation(false);
+      return;
+    }
+    if (!conversationsRef.current.some((item) => item.id === sessionId)) {
+      pendingSessionPreferencesRef.current.set(sessionId, result);
+      return;
+    }
+    const next = sortConversationList(conversationsRef.current.map((item) => item.id === sessionId
+      ? { ...item, pinned: result.pinned, muted: result.muted }
+      : item));
+    conversationsRef.current = next;
+    setConversations(next);
+  };
+
+  const runSessionPreference = async (action: "pin" | "mute" | "hide") => {
+    if (!menuConversation || preferenceBusy) return;
+    setPreferenceBusy(true);
+    try {
+      const result = action === "pin"
+        ? await updateSessionPinned(
+          session,
+          menuConversation.id,
+          !menuConversation.pinned,
+          Boolean(menuConversation.muted),
+        )
+        : action === "mute"
+          ? await updateSessionMuted(
+            session,
+            menuConversation.id,
+            !menuConversation.muted,
+            Boolean(menuConversation.pinned),
+          )
+          : await hideSession(
+            session,
+            menuConversation.id,
+            Boolean(menuConversation.pinned),
+            Boolean(menuConversation.muted),
+          );
+      applySessionPreference(result);
+      setNotice(action === "pin"
+        ? result.pinned ? "会话已置顶" : "已取消置顶"
+        : action === "mute"
+          ? result.muted ? "已开启消息免打扰" : "已关闭消息免打扰"
+          : "会话已隐藏");
+      if (action !== "hide") setConversationMenuId(null);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "会话设置更新失败");
+    } finally {
+      setPreferenceBusy(false);
+    }
   };
 
   const removeGroupLocally = (groupId: string) => {
@@ -1183,6 +1266,16 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
         affectedUserRole: typeof body.affectedUserRole === "number" ? body.affectedUserRole : null,
         memberCount: typeof body.memberCount === "number" ? body.memberCount : undefined,
         dissolved: body.dissolved === true,
+        updatedTime: typeof body.updatedTime === "number" ? body.updatedTime : notification.timestamp,
+      });
+      return;
+    }
+    if (notification.type === 107) {
+      applySessionPreference({
+        sessionId: String(notification.sessionId),
+        pinned: body.pinned === true,
+        muted: body.muted === true,
+        hidden: body.hidden === true,
         updatedTime: typeof body.updatedTime === "number" ? body.updatedTime : notification.timestamp,
       });
     }
@@ -1775,11 +1868,9 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
           }));
           setDrafts((items) => ({ ...items, [activeConversation.id]: "" }));
           setConversations((items) => [
-            ...items
-              .map((item) => item.id === activeConversation.id
-                ? { ...item, preview: content, time: "刚刚", failed: false, draft: undefined }
-                : item)
-              .sort((a, b) => Number(b.id === activeConversation.id) - Number(a.id === activeConversation.id)),
+            ...sortConversationList(items.map((item) => item.id === activeConversation.id
+              ? { ...item, preview: content, time: "刚刚", activityTime: sentAt.getTime(), failed: false, draft: undefined }
+              : item)),
           ]);
 
           sendRealtimeMessage(activeConversation, 0, content, clientMessageId);
@@ -1810,11 +1901,9 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
               [activeConversation.id]: [...(items[activeConversation.id] ?? []), outgoing],
             }));
             setConversations((items) => [
-              ...items
-                .map((item) => item.id === activeConversation.id
-                  ? { ...item, preview: "[图片]", time: "刚刚", failed: false, draft: undefined }
-                  : item)
-                .sort((a, b) => Number(b.id === activeConversation.id) - Number(a.id === activeConversation.id)),
+              ...sortConversationList(items.map((item) => item.id === activeConversation.id
+                ? { ...item, preview: "[图片]", time: "刚刚", activityTime: Date.now(), failed: false, draft: undefined }
+                : item)),
             ]);
 
             const uploaded = await uploadChatImage(session, prepared, (progress) => {
@@ -1898,6 +1987,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
           {tab === "messages" ? (
             <>
               <SearchField value={query} onChange={setQuery} placeholder="搜索会话或消息" />
+              {notice ? <p className="page-notice conversation-notice" role="status">{notice}</p> : null}
               <section className="sync-strip" aria-label="同步状态">
                 <span className={`connection-dot ${syncPresentation.tone}`} />
                 <p>{syncPresentation.label}</p>
@@ -1921,6 +2011,10 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
                         draft: drafts[conversation.id]?.trim() || conversation.draft,
                       }}
                       onClick={() => openConversation(conversation.id)}
+                      onMenu={() => {
+                        setConversationMenuId(conversation.id);
+                        setConfirmHideConversation(false);
+                      }}
                     />
                   ))}
                   {filteredConversations.length === 0 ? <CompactEmpty text="没有找到相关会话" /> : null}
@@ -2009,6 +2103,67 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
         </main>
       </MobileScroll>
 
+      {menuConversation ? (
+        <div
+          className="conversation-actions-backdrop"
+          onClick={() => {
+            if (preferenceBusy) return;
+            setConversationMenuId(null);
+            setConfirmHideConversation(false);
+          }}
+        >
+          <section
+            className="conversation-actions-sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`管理会话 ${menuConversation.name}`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="conversation-actions-heading">
+              <Avatar
+                label={menuConversation.avatar}
+                imageUrl={menuConversation.avatarUrl}
+                tone={menuConversation.avatarTone}
+              />
+              <div><strong>{menuConversation.name}</strong><small>会话设置</small></div>
+              <button
+                type="button"
+                aria-label="关闭会话设置"
+                disabled={preferenceBusy}
+                onClick={() => setConversationMenuId(null)}
+              ><Cross2Icon /></button>
+            </div>
+            {confirmHideConversation ? (
+              <div className="conversation-hide-confirm">
+                <strong>隐藏这个会话？</strong>
+                <p>会话会从当前列表移除，收到新消息后会自动重新出现。</p>
+                <div>
+                  <button type="button" disabled={preferenceBusy} onClick={() => setConfirmHideConversation(false)}>返回</button>
+                  <button type="button" className="danger" disabled={preferenceBusy} onClick={() => void runSessionPreference("hide")}>
+                    {preferenceBusy ? "正在处理" : "确认隐藏"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="conversation-actions-list">
+                <button type="button" disabled={preferenceBusy} onClick={() => void runSessionPreference("pin")}>
+                  <span><strong>{menuConversation.pinned ? "取消置顶" : "置顶会话"}</strong><small>置顶会话会排在消息列表前面</small></span>
+                  <ChevronRightIcon />
+                </button>
+                <button type="button" disabled={preferenceBusy} onClick={() => void runSessionPreference("mute")}>
+                  <span><strong>{menuConversation.muted ? "关闭消息免打扰" : "消息免打扰"}</strong><small>保留未读数，不再突出提醒</small></span>
+                  <ChevronRightIcon />
+                </button>
+                <button type="button" className="danger" disabled={preferenceBusy} onClick={() => setConfirmHideConversation(true)}>
+                  <span><strong>隐藏会话</strong><small>新消息到达时自动恢复显示</small></span>
+                  <ChevronRightIcon />
+                </button>
+              </div>
+            )}
+          </section>
+        </div>
+      ) : null}
+
       <nav className="bottom-nav" aria-label="主要导航">
         {tabs.map((item) => (
           <button
@@ -2066,6 +2221,7 @@ type Conversation = {
   peerId?: string;
   lastMessageId?: string;
   lastReadMessageId?: string;
+  activityTime?: number;
 };
 
 type GroupMember = {
@@ -2280,25 +2436,68 @@ function Avatar({
   );
 }
 
-function ConversationRow({ conversation, onClick }: { conversation: Conversation; onClick: () => void }) {
+function ConversationRow({
+  conversation,
+  onClick,
+  onMenu,
+}: {
+  conversation: Conversation;
+  onClick: () => void;
+  onMenu: () => void;
+}) {
+  const pointerStartX = useRef<number | null>(null);
+  const suppressNextClick = useRef(false);
   return (
-    <button className="conversation-row" type="button" onClick={onClick}>
-      <Avatar label={conversation.avatar} imageUrl={conversation.avatarUrl} tone={conversation.avatarTone} online={conversation.presence === "在线"} />
-      <span className="conversation-copy">
-        <span className="conversation-title">
-          <strong>{conversation.name}</strong>
-          {conversation.pinned ? <small className="pin-label">置顶</small> : null}
+    <div className="conversation-row">
+      <button
+        className="conversation-row-main"
+        type="button"
+        onPointerDown={(event) => {
+          if (event.isPrimary) pointerStartX.current = event.clientX;
+        }}
+        onPointerUp={(event) => {
+          const startX = pointerStartX.current;
+          pointerStartX.current = null;
+          if (startX != null && startX - event.clientX > 44) {
+            suppressNextClick.current = true;
+            onMenu();
+          }
+        }}
+        onPointerCancel={() => {
+          pointerStartX.current = null;
+        }}
+        onClick={(event) => {
+          if (suppressNextClick.current) {
+            suppressNextClick.current = false;
+            event.preventDefault();
+            return;
+          }
+          onClick();
+        }}
+      >
+        <Avatar label={conversation.avatar} imageUrl={conversation.avatarUrl} tone={conversation.avatarTone} online={conversation.presence === "在线"} />
+        <span className="conversation-copy">
+          <span className="conversation-title">
+            <strong>{conversation.name}</strong>
+            {conversation.pinned ? <small className="pin-label">置顶</small> : null}
+          </span>
+          <span className={`conversation-preview ${conversation.failed ? "failed" : ""}`}>
+            {conversation.draft ? <em>草稿</em> : null}
+            {conversation.failed ? "发送失败" : conversation.draft || conversation.preview}
+          </span>
         </span>
-        <span className={`conversation-preview ${conversation.failed ? "failed" : ""}`}>
-          {conversation.draft ? <em>草稿</em> : null}
-          {conversation.failed ? "发送失败" : conversation.draft || conversation.preview}
+        <span className="conversation-meta">
+          <time>{conversation.time}</time>
+          <span className={`conversation-indicators ${conversation.muted ? "muted" : ""}`}>
+            {conversation.muted ? <SpeakerOffIcon /> : null}
+            {conversation.unread > 0 ? <b>{conversation.unread > 99 ? "99+" : conversation.unread}</b> : null}
+          </span>
         </span>
-      </span>
-      <span className="conversation-meta">
-        <time>{conversation.time}</time>
-        {conversation.unread > 0 ? <b>{conversation.unread > 99 ? "99+" : conversation.unread}</b> : conversation.muted ? <SpeakerOffIcon /> : null}
-      </span>
-    </button>
+      </button>
+      <button className="conversation-menu-button" type="button" onClick={onMenu} aria-label={`管理会话 ${conversation.name}`}>
+        <DotsHorizontalIcon />
+      </button>
+    </div>
   );
 }
 
@@ -3628,6 +3827,15 @@ function formatConversationTime(value?: number) {
   const now = new Date();
   if (now.toDateString() === date.toDateString()) return formatClock(date);
   return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(date);
+}
+
+function sortConversationList(items: Conversation[]) {
+  return [...items].sort((left, right) => {
+    if (Boolean(left.pinned) !== Boolean(right.pinned)) {
+      return Number(Boolean(right.pinned)) - Number(Boolean(left.pinned));
+    }
+    return (right.activityTime || 0) - (left.activityTime || 0);
+  });
 }
 
 function describeSyncState(

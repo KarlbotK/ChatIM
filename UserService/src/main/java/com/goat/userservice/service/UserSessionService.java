@@ -17,4 +17,6 @@ public interface UserSessionService extends IService<UserSession> {
     int getGroupMemberCount(Long sessionId);
 
     List<SessionReadPosition> getReadPositions(Long userId);
+
+    List<UserSession> revealHiddenSession(Long sessionId);
 }

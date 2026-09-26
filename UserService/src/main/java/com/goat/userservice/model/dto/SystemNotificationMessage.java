@@ -19,6 +19,7 @@ import java.util.Map;
  * - 103：新群聊会话创建通知（群组邀请）
  * - 105：群资料更新通知
  * - 106：群成员和角色变更通知
+ * - 107：会话置顶、免打扰和隐藏状态变更通知
  */
 @Data
 public class SystemNotificationMessage implements Serializable {
@@ -59,6 +60,9 @@ public class SystemNotificationMessage implements Serializable {
      * 101: 收到好友申请
      * 102: 新会话创建
      * 103: 新群聊会话创建
+     * 105: 群资料更新
+     * 106: 群成员和角色变更
+     * 107: 当前用户的会话偏好变更
      */
     private Integer type;
 

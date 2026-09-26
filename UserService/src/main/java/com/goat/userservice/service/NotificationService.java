@@ -5,6 +5,7 @@ import com.goat.userservice.model.dto.NewGroupSessionNotificationDTO;
 import com.goat.userservice.model.dto.NewSessionNotificationDTO;
 import com.goat.userservice.model.dto.response.GroupProfileResponse;
 import com.goat.userservice.model.dto.response.GroupManagementResponse;
+import com.goat.userservice.model.dto.response.SessionPreferenceResponse;
 
 /**
  * 通知推送服务接口
@@ -61,5 +62,10 @@ public interface NotificationService {
     void pushGroupManagementUpdated(
             Long userId,
             GroupManagementResponse result
+    );
+
+    void pushSessionPreferenceUpdated(
+            Long userId,
+            SessionPreferenceResponse result
     );
 }

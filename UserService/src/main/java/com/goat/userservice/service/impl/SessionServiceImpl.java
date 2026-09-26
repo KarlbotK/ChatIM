@@ -1,6 +1,7 @@
 package com.goat.userservice.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 
 import com.goat.common.common.ErrorCode;
@@ -25,6 +26,7 @@ import com.goat.userservice.model.dto.response.SessionDetailResponse;
 import com.goat.userservice.model.dto.response.SessionListResponse;
 import com.goat.userservice.model.dto.response.SessionParticipantResponse;
 import com.goat.userservice.model.dto.response.SessionReadResponse;
+import com.goat.userservice.model.dto.response.SessionPreferenceResponse;
 import com.goat.userservice.model.dto.response.SessionSummaryResponse;
 import com.goat.userservice.model.entity.Friend;
 import com.goat.userservice.model.entity.Session;
@@ -320,6 +322,98 @@ public class SessionServiceImpl extends ServiceImpl<SessionMapper, Session>
                 .sessionId(sessionId)
                 .lastReadMessageId(effectiveReadMessageId)
                 .unreadCount(unreadCount)
+                .build();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public SessionPreferenceResponse updatePinned(Long userId, Long sessionId, boolean pinned) {
+        UserSession membership = validatePreferenceMembership(userId, sessionId);
+        if (!Objects.equals(membership.getPinned(), pinned)) {
+            updatePreference(userId, sessionId, "pinned", pinned);
+        }
+        SessionPreferenceResponse result = buildPreferenceResult(
+                membership,
+                pinned,
+                Boolean.TRUE.equals(membership.getMuted()),
+                Boolean.TRUE.equals(membership.getHidden())
+        );
+        notificationService.pushSessionPreferenceUpdated(userId, result);
+        return result;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public SessionPreferenceResponse updateMuted(Long userId, Long sessionId, boolean muted) {
+        UserSession membership = validatePreferenceMembership(userId, sessionId);
+        if (!Objects.equals(membership.getMuted(), muted)) {
+            updatePreference(userId, sessionId, "muted", muted);
+        }
+        SessionPreferenceResponse result = buildPreferenceResult(
+                membership,
+                Boolean.TRUE.equals(membership.getPinned()),
+                muted,
+                Boolean.TRUE.equals(membership.getHidden())
+        );
+        notificationService.pushSessionPreferenceUpdated(userId, result);
+        return result;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public SessionPreferenceResponse hideSession(Long userId, Long sessionId) {
+        UserSession membership = validatePreferenceMembership(userId, sessionId);
+        if (!Boolean.TRUE.equals(membership.getHidden())) {
+            updatePreference(userId, sessionId, "hidden", true);
+        }
+        SessionPreferenceResponse result = buildPreferenceResult(
+                membership,
+                Boolean.TRUE.equals(membership.getPinned()),
+                Boolean.TRUE.equals(membership.getMuted()),
+                true
+        );
+        notificationService.pushSessionPreferenceUpdated(userId, result);
+        return result;
+    }
+
+    private UserSession validatePreferenceMembership(Long userId, Long sessionId) {
+        LambdaQueryWrapper<UserSession> membershipQuery = new LambdaQueryWrapper<>();
+        membershipQuery.eq(UserSession::getUserId, userId)
+                .eq(UserSession::getSessionId, sessionId)
+                .eq(UserSession::getStatus, SESSION_STATUS_NORMAL);
+        UserSession membership = userSessionMapper.selectOne(membershipQuery);
+        ThrowUtils.throwIf(membership == null, ErrorCode.MESSAGE_NOT_IN_SESSION);
+
+        LambdaQueryWrapper<Session> sessionQuery = new LambdaQueryWrapper<>();
+        sessionQuery.eq(Session::getSessionId, sessionId)
+                .eq(Session::getStatus, SESSION_STATUS_NORMAL);
+        ThrowUtils.throwIf(sessionMapper.selectOne(sessionQuery) == null,
+                ErrorCode.NOT_FOUND_ERROR, "会话不存在或已失效");
+        return membership;
+    }
+
+    private void updatePreference(Long userId, Long sessionId, String field, boolean value) {
+        UpdateWrapper<UserSession> update = new UpdateWrapper<>();
+        update.eq("user_id", userId)
+                .eq("session_id", sessionId)
+                .eq("status", SESSION_STATUS_NORMAL)
+                .set(field, value)
+                .set("updated_time", new Date());
+        ThrowUtils.throwIf(userSessionMapper.update(null, update) != 1,
+                ErrorCode.OPERATION_ERROR, "会话设置更新失败");
+    }
+
+    private SessionPreferenceResponse buildPreferenceResult(
+            UserSession membership,
+            boolean pinned,
+            boolean muted,
+            boolean hidden) {
+        return SessionPreferenceResponse.builder()
+                .sessionId(membership.getSessionId())
+                .pinned(pinned)
+                .muted(muted)
+                .hidden(hidden)
+                .updatedTime(System.currentTimeMillis())
                 .build();
     }
 

@@ -53,6 +53,11 @@ public class MessageTypeConstant {
     public static final int TYPE_SYSTEM_GROUP_MANAGEMENT_UPDATED = 106;
 
     /**
+     * 系统通知：当前用户的会话偏好发生变化。
+     */
+    public static final int TYPE_SYSTEM_SESSION_PREFERENCE_UPDATED = 107;
+
+    /**
      * 聊天消息类型范围：0-99
      */
     public static final int CHAT_MESSAGE_MIN = 0;

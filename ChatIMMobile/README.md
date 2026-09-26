@@ -5,7 +5,7 @@
 ## 当前可体验功能
 
 - 密码登录、验证码登录、注册、会话恢复和退出登录；
-- 会话列表、未读数、置顶/免打扰/草稿/失败等列表状态；
+- 会话列表、未读数、置顶/免打扰/隐藏操作、草稿/失败等列表状态；
 - 会话搜索、聊天详情、文本发送与发送状态；
 - 联系人列表、好友搜索、好友资料和好友申请发送；
 - 新朋友申请列表、未读数、批量已读、接受/拒绝，以及通过后直接发起会话；
@@ -59,6 +59,9 @@ $env:FRONTEND_ORIGIN="http://localhost:4173"
 - `GET /api/session/list?cursor=&limit=`
 - `GET /api/session/{sessionId}`
 - `POST /api/session/{sessionId}/read`
+- `POST /api/session/{sessionId}/pin`
+- `POST /api/session/{sessionId}/mute`
+- `DELETE /api/session/{sessionId}`，仅隐藏当前用户的会话，新消息到达后恢复显示
 - `GET /api/group/{sessionId}/members?cursor=&limit=`
 - `PATCH /api/group/{sessionId}`
 - `GET /api/group/{sessionId}/avatar/upload-url?fileName=`
@@ -75,7 +78,7 @@ $env:FRONTEND_ORIGIN="http://localhost:4173"
 
 ## 当前接口边界
 
-后端已经公开会话摘要、会话详情、已读位置、未读数、群成员分页、群资料修改和成员管理接口。前端在冷启动与重连后以服务端会话状态为准，在会话可见后提交最后消息 ID，并在打开群资料时同步群信息、成员角色和成员列表。群主可修改资料、管理成员、转让或解散群聊，管理员可修改公告和移除普通成员，其他成员可退出；在线成员会通过系统事件收到最新群资料和成员状态。消息发送会分别收到 `accepted`、`persisted` 或 `failed` ACK，前端只在 `persisted` 后显示“已发送”；ACK 超时后会查询 `/api/message/status`，无法确认时显示“结果待确认”，不会自动重复发送。
+后端已经公开会话摘要、会话详情、已读位置、未读数、置顶、免打扰、隐藏、群成员分页、群资料修改和成员管理接口。前端在冷启动与重连后以服务端会话状态为准，在会话可见后提交最后消息 ID；置顶区保持独立排序，隐藏会话收到持久化新消息后自动恢复显示。打开群资料时会同步群信息、成员角色和成员列表。群主可修改资料、管理成员、转让或解散群聊，管理员可修改公告和移除普通成员，其他成员可退出；在线成员会通过系统事件收到最新群资料和成员状态。消息发送会分别收到 `accepted`、`persisted` 或 `failed` ACK，前端只在 `persisted` 后显示“已发送”；ACK 超时后会查询 `/api/message/status`，无法确认时显示“结果待确认”，不会自动重复发送。
 
 WebSocket 建连后，客户端通过 `/api/message/offline/sync` 循环拉取 MySQL 中的完整消息，每页合并成功后保存当前账号专属的服务端游标，直到 `hasMore` 为 false。
 

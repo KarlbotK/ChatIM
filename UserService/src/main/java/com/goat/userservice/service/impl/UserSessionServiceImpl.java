@@ -10,6 +10,7 @@ import com.goat.userservice.mapper.UserSessionMapper;
 import com.goat.userservice.model.entity.UserSession;
 import com.goat.userservice.service.UserSessionService;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -62,5 +63,21 @@ public class UserSessionServiceImpl extends ServiceImpl<UserSessionMapper, UserS
                         membership.getLastReadMessageId()
                 ))
                 .toList();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public List<UserSession> revealHiddenSession(Long sessionId) {
+        LambdaQueryWrapper<UserSession> hiddenQuery = new LambdaQueryWrapper<>();
+        hiddenQuery.eq(UserSession::getSessionId, sessionId)
+                .eq(UserSession::getStatus, UserSessionStatusEnum.NORMAL.getCode())
+                .eq(UserSession::getHidden, true);
+        List<UserSession> hiddenMemberships = this.list(hiddenQuery);
+        if (hiddenMemberships.isEmpty()) {
+            return List.of();
+        }
+        baseMapper.revealHiddenSession(sessionId);
+        hiddenMemberships.forEach(membership -> membership.setHidden(false));
+        return hiddenMemberships;
     }
 }

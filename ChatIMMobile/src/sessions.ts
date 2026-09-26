@@ -32,6 +32,14 @@ export type SessionReadResponse = {
   unreadCount: number;
 };
 
+export type SessionPreferenceResult = {
+  sessionId: string | number;
+  pinned: boolean;
+  muted: boolean;
+  hidden: boolean;
+  updatedTime: number;
+};
+
 type ApiResponse<T> = {
   code: number;
   data: T;
@@ -127,4 +135,67 @@ export async function markSessionRead(
       body: JSON.stringify({ lastReadMessageId }),
     },
   );
+}
+
+export async function updateSessionPinned(
+  session: AuthSession,
+  sessionId: string,
+  pinned: boolean,
+  currentMuted = false,
+) {
+  if (demoModeEnabled) {
+    return demoPreference(sessionId, { pinned, muted: currentMuted });
+  }
+  return request<SessionPreferenceResult>(
+    session,
+    `/api/session/${encodeURIComponent(sessionId)}/pin`,
+    { method: "POST", body: JSON.stringify({ enabled: pinned }) },
+  );
+}
+
+export async function updateSessionMuted(
+  session: AuthSession,
+  sessionId: string,
+  muted: boolean,
+  currentPinned = false,
+) {
+  if (demoModeEnabled) {
+    return demoPreference(sessionId, { pinned: currentPinned, muted });
+  }
+  return request<SessionPreferenceResult>(
+    session,
+    `/api/session/${encodeURIComponent(sessionId)}/mute`,
+    { method: "POST", body: JSON.stringify({ enabled: muted }) },
+  );
+}
+
+export async function hideSession(
+  session: AuthSession,
+  sessionId: string,
+  currentPinned = false,
+  currentMuted = false,
+) {
+  if (demoModeEnabled) {
+    return demoPreference(sessionId, { pinned: currentPinned, muted: currentMuted, hidden: true });
+  }
+  return request<SessionPreferenceResult>(
+    session,
+    `/api/session/${encodeURIComponent(sessionId)}`,
+    { method: "DELETE" },
+  );
+}
+
+function demoPreference(
+  sessionId: string,
+  changes: Partial<Pick<SessionPreferenceResult, "pinned" | "muted" | "hidden">>,
+) {
+  return new Promise<SessionPreferenceResult>((resolve) => {
+    window.setTimeout(() => resolve({
+      sessionId,
+      pinned: changes.pinned ?? false,
+      muted: changes.muted ?? false,
+      hidden: changes.hidden ?? false,
+      updatedTime: Date.now(),
+    }), 360);
+  });
 }

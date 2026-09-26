@@ -11,6 +11,7 @@ import com.goat.userservice.model.dto.NewSessionNotificationDTO;
 import com.goat.userservice.model.dto.SystemNotificationMessage;
 import com.goat.userservice.model.dto.response.GroupProfileResponse;
 import com.goat.userservice.model.dto.response.GroupManagementResponse;
+import com.goat.userservice.model.dto.response.SessionPreferenceResponse;
 import com.goat.userservice.service.NotificationService;
 
 import cn.hutool.json.JSONUtil;
@@ -238,6 +239,32 @@ public class NotificationServiceImpl implements NotificationService {
             sendNotification(message, "群成员管理通知");
         } catch (Exception exception) {
             log.error("发送群成员管理通知失败，用户ID: {}, 会话ID: {}, 错误: {}",
+                    userId, result.getSessionId(), exception.getMessage(), exception);
+        }
+    }
+
+    @Override
+    public void pushSessionPreferenceUpdated(Long userId, SessionPreferenceResponse result) {
+        try {
+            SystemNotificationMessage message = new SystemNotificationMessage();
+            message.setMessageId(generateMessageId());
+            message.setSessionId(result.getSessionId());
+            message.setSenderId(userId);
+            message.setReceiverId(userId);
+            message.setType(MessageTypeConstant.TYPE_SYSTEM_SESSION_PREFERENCE_UPDATED);
+            message.setSessionType(null);
+            message.setTimestamp(System.currentTimeMillis());
+
+            Map<String, Object> body = new HashMap<>();
+            body.put("pinned", result.isPinned());
+            body.put("muted", result.isMuted());
+            body.put("hidden", result.isHidden());
+            body.put("updatedTime", result.getUpdatedTime());
+            message.setBody(body);
+
+            sendNotification(message, "会话偏好更新通知");
+        } catch (Exception exception) {
+            log.error("发送会话偏好更新通知失败，用户ID: {}, 会话ID: {}, 错误: {}",
                     userId, result.getSessionId(), exception.getMessage(), exception);
         }
     }

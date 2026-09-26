@@ -23,6 +23,7 @@ ChatIM 是一个正在迭代中的分布式即时通讯项目。仓库中的 Mav
 - 基于账号签名游标的离线消息分页同步，完整数据回源 MySQL。
 - 历史消息分页入口。
 - 服务端会话摘要、置顶/免打扰状态、最后消息和未读数聚合。
+- 会话置顶、免打扰和隐藏写操作；隐藏会话收到新消息后自动恢复显示。
 - 会话详情返回单聊对方资料或群资料、当前用户权限和会话设置。
 - 进入会话后提交单调递增的已读位置，冷启动和重连时以后端未读数校正本地状态。
 - 会话草稿、最近消息和本地缓存恢复。
@@ -313,6 +314,9 @@ HTTP 请求通过 Gateway 的 `http://localhost:10010` 访问。
 | 会话摘要 | `GET /api/session/list` |
 | 会话详情 | `GET /api/session/{sessionId}` |
 | 标记会话已读 | `POST /api/session/{sessionId}/read` |
+| 置顶或取消置顶 | `POST /api/session/{sessionId}/pin` |
+| 开启或关闭免打扰 | `POST /api/session/{sessionId}/mute` |
+| 隐藏当前用户的会话 | `DELETE /api/session/{sessionId}` |
 | 群成员分页 | `GET /api/group/{sessionId}/members` |
 | 离线与历史消息 | `/api/message/**` |
 | 各会话未读数 | `GET /api/message/unread` |
@@ -366,7 +370,7 @@ Authorization: Bearer <accessToken>
 
 ## 当前限制
 
-- 会话摘要、详情、已读位置和未读数已经由服务端提供；置顶、免打扰、隐藏等写操作接口尚未补齐。
+- 会话摘要、详情、已读位置、未读数以及置顶、免打扰、隐藏操作已经由服务端提供。
 - 群资料、成员分页、资料修改和基础成员管理已经接入；群昵称和全员禁言尚未实现。
 - 图片消息需要从长期下载 URL 调整为稳定对象标识。
 - 浏览器原型使用 `localStorage`，正式移动端必须迁移到系统安全存储和本地数据库。
@@ -395,10 +399,10 @@ Authorization: Bearer <accessToken>
 
 下一轮按以下顺序推进：
 
-1. 会话置顶、免打扰和隐藏操作。
-2. 图片稳定对象标识与临时下载地址。
-3. 移动端安全存储。
-4. 消息手动重试和红包主流程。
-5. 群昵称和全员禁言。
+1. 图片稳定对象标识与临时下载地址。
+2. 移动端安全存储。
+3. 消息手动重试和红包主流程。
+4. 群昵称和全员禁言。
+5. 好友备注和基础联系人管理。
 
 完整范围和验收条件见 [NEXT_ROUND_PRODUCT_REQUIREMENTS.md](./NEXT_ROUND_PRODUCT_REQUIREMENTS.md)。
