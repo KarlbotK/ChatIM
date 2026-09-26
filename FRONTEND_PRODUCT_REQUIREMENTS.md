@@ -492,6 +492,7 @@ disconnected -> connecting -> connected -> reconnecting -> connected
 
 - 本地发送状态：sending、sent、unknown、failed；超时记为 unknown（结果待确认），不直接认定失败；
 - 使用 `clientMessageId` 关联本地消息、实时消息和 ACK；普通实时回推不改变最终发送状态；
+- 存储 Topic 与推送 Topic 并行，接收者可能先看到实时消息；发送端仍以 `persisted` ACK 或状态查询为落库依据；
 - `accepted` 保持 sending，`persisted` 标记 sent，`failed` 标记 failed；
 - 8 秒内未收到最终 ACK 时调用 `GET /api/message/status?clientMessageId=`，仍未确认则标记 unknown；
 - 断线保留待确认消息，用户主动重试时复用同一个 clientMessageId；

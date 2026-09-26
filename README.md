@@ -348,14 +348,13 @@ Authorization: Bearer <accessToken>
 ```text
 客户端 WebSocket
   -> RealTimeService 绑定已认证发送者、校验会话权限并按 clientMessageId 幂等
-  -> WebSocket accepted ACK
-  -> Kafka 存储 Topic
-  -> OfflineDataService 持久化
-  -> Kafka persisted ACK -> 发送者 WebSocket
-  -> Kafka 推送 Topic
-  -> RealTimeService 查询 Redis 在线路由
-  -> 本机推送或跨实例转发
+  |-> Kafka store-topic -> OfflineDataService -> MySQL
+  |                         `-> persisted ACK -> 发送者 WebSocket
+  `-> Kafka message-topic -> RealTimeService 查询 Redis 在线路由
+                            `-> 本机推送或跨实例转发
 ```
+
+`store-topic` 和 `message-topic` 是并行链路：前者保证消息最终可查询，后者优先保证在线实时性。`accepted` 只表示存储事件已被 Kafka 接受，接收者实时看到消息也不代表已经落库；发送端必须收到 `persisted` 或通过状态接口查到 MySQL 记录后，才能显示“已发送”。并行方案降低实时延迟并允许两类消费者独立扩容，代价是可能出现先推送后落库、推送成功而存储失败，或存储成功而推送失败；数据库幂等、持久化 ACK 和离线补拉用于处理这些不一致窗口。
 
 客户端需要同时处理：
 

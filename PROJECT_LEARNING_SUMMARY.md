@@ -98,6 +98,7 @@ WebSocketHandler
 
 - `store-topic` 是存储链路，最终进入 MySQL。
 - `message-topic` 是实时推送链路，最终写入接收者的 WebSocket Channel。
+- 两者由 RealTimeService 异步并行发送，项目明确选择低实时延迟和独立扩容；实时回推不等于落库成功，发送端以 `persisted` ACK 或状态查询为准。
 - Kafka 不是发送到用户 B 的网络工具；Kafka 只负责在服务内部传递任务。真正把数据交给用户 B 的最后一步，是 B 所在 Netty 实例上的 `channel.writeAndFlush(...)`。
 
 如果没有 Kafka，也可以由 WebSocketHandler 直接调用存储服务、直接调用推送逻辑，但接收、存储、推送会同步耦合在一起。Kafka 的价值是缓冲流量、异步解耦、允许消费者独立扩展，并保留消息一段时间供失败重试；代价是链路变长、最终一致性和重复消费需要自己处理。
@@ -109,9 +110,9 @@ WebSocketHandler
 1. Kafka 消费者仍然消费消息。
 2. 如果接收者没有 active Channel，消息不会直接推送。
 3. 普通聊天消息已经通过 `store-topic` 持久化到 MySQL。
-4. MySQL 的 message 表变更被 Canal 监听，CanalClient 把新消息同步到 Redis 的 `session:{sessionId}` ZSet。
-5. 用户下次登录时，UserService 从 `user:offline:{userId}` 取出并删除离线时间，客户端携带这个时间请求离线消息。
-6. OfflineDataService 根据用户的会话列表，查询离线时间之后的消息：最近 7 天优先查 Redis，更早的数据查 MySQL。
+4. MySQL 的 message 表变更仍可由 Canal 同步到 Redis 热缓存，但可靠补拉不依赖 Canal 是否及时完成。
+5. 用户重新连接后携带当前账号保存的服务端签名游标调用 `/api/message/offline/sync`。
+6. OfflineDataService 直接从 MySQL 按 `createdTime + messageId` 联合游标分页，客户端按 `messageId` 去重并在整页合并成功后推进游标。
 
 因此，“离线后上线收到消息”不是 Kafka 直接把消息推给用户，而是“数据库/Redis 保存消息 + 用户上线后主动补拉”。
 

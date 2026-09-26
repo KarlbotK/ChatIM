@@ -53,18 +53,8 @@ public class ConsumerOfflineService {
                     log.error("消息持久化 ACK 发送失败，messageId={}", record.getMessageId(), failure);
                 }
             });
-            if (persistResult.created()) {
-                kafkaTemplate.send(
-                        CommonConstant.KAFKA_MESSAGE_TOPIC_PUSH,
-                        record.getSessionId().toString(),
-                        message
-                ).whenComplete((result, failure) -> {
-                    if (failure != null) {
-                        log.error("持久化消息实时推送事件发送失败，messageId={}", record.getMessageId(), failure);
-                    }
-                });
-            }
-            log.info("消息存储事件处理成功，messageId={}", record.getMessageId());
+            log.info("消息存储事件处理成功，messageId={}，created={}",
+                    record.getMessageId(), persistResult.created());
         } catch (Exception e) {
             log.error("消息存储事件处理失败: {}", message, e);
             throw new IllegalStateException("消息存储事件处理失败", e);

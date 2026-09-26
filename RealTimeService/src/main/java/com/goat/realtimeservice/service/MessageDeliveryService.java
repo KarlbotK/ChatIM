@@ -111,6 +111,21 @@ public class MessageDeliveryService {
         }
 
         String messageJson = JSONUtil.toJsonStr(request);
+        publishForPersistence(request, accepted, deliveryKey, channel, messageJson);
+        publishForRealtimePush(request, messageJson);
+    }
+
+    /**
+     * 存储链路与实时推送链路采用双 Topic 并行设计。完成校验后分别
+     * 发起两个异步发送，两个 Future 互不等待；accepted 只表示存储
+     * 事件已被 Kafka 接受，最终落库状态仍由 OfflineDataService 返回。
+     */
+    private void publishForPersistence(
+            MessageRequest request,
+            MessageDeliveryRecord accepted,
+            String deliveryKey,
+            Channel channel,
+            String messageJson) {
         try {
             kafkaTemplate.send(
                     CommonConstant.KAFKA_MESSAGE_TOPIC_STORE,
@@ -128,6 +143,24 @@ public class MessageDeliveryService {
         } catch (Exception exception) {
             failAccepted(deliveryKey, accepted, channel, ErrorCode.MESSAGE_PERSIST_FAILED);
             log.error("消息存储事件发送异常，messageId={}", request.getMessageId(), exception);
+        }
+    }
+
+    private void publishForRealtimePush(MessageRequest request, String messageJson) {
+        try {
+            kafkaTemplate.send(
+                    CommonConstant.KAFKA_MESSAGE_TOPIC_PUSH,
+                    request.getSessionId().toString(),
+                    messageJson
+            ).whenComplete((result, failure) -> {
+                if (failure != null) {
+                    log.error("消息实时推送事件发送失败，messageId={}", request.getMessageId(), failure);
+                }
+            });
+        } catch (Exception exception) {
+            // 推送 Topic 失败不应阻止已经发起的存储链路；消息落库后可由
+            // 离线同步恢复。这是双 Topic 并行方案明确接受的取舍。
+            log.error("消息实时推送事件发送异常，messageId={}", request.getMessageId(), exception);
         }
     }
 

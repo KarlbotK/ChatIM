@@ -298,7 +298,7 @@ WHERE apply_friend_id = ?
 
 Channel 是否 active 只是连接检查，不是幂等依据；本地缓存也不能保证跨实例去重。
 
-上述 `messageId` 唯一约束只解决同一 Kafka 事件重复消费。当前 WebSocket 每次收到请求都会生成新 `messageId`，消息表没有保存 `clientMessageId`；客户端复用该字段重发仍会产生新消息。若要满足前端“重试不重复”，需另补基于已认证发送者与 `clientMessageId` 的持久化幂等及原结果返回。红包发送目前也只有 3 秒防重复提交，不能作为长期幂等保证。
+普通消息已经增加“已认证发送者 + `clientMessageId`”唯一约束和原结果返回：Redis 预留记录用于快速挡住常规重试，MySQL 唯一索引处理 Kafka 重复消费并作为最终幂等防线。并行推送仍有独立边界：Redis 幂等记录过期或丢失后再次提交，数据库可以阻止重复落库，但已经并行发出的实时事件仍可能产生重复气泡，因此接收端继续按 `messageId` 去重。红包发送目前仍只有短期防重复提交，不能作为长期账务幂等保证。
 
 推送失败是否重试，要看消息是否已经持久化。只有存储与补拉闭环完善后，普通聊天才能依赖补拉恢复（见第 5.4 节）；消息落库失败不能直接确认存储消费的 offset。
 
@@ -316,6 +316,21 @@ Channel 是否 active 只是连接检查，不是幂等依据；本地缓存也�
 `acks=all` 只说明 Kafka Producer 需要等待副本确认，不代表消费者幂等，也不代表 MySQL 事务和 Kafka 事务自动一致。
 
 当前普通消息与红包消息分别发送 `store-topic` 和 `message-topic`，两次发送并不原子；收到 WebSocket 回推不等于 MySQL 已落库。前端需要的发送确认应由 RealTimeService 通过 WebSocket 返回，并区分已接收与已持久化；持久化结果由 OfflineDataService 通过事件反馈。不能仅新增一个客户端调用的 HTTP ack 接口就宣称消息已可靠保存。
+
+### 3.7 存储与推送顺序的架构选择
+
+本项目保留原有的双 Topic 并行方案：RealTimeService 完成身份、权限和 `clientMessageId` 校验后，不等待 MySQL 落库，分别异步发送 `store-topic` 和 `message-topic`。OfflineDataService 负责持久化和 `persisted` ACK，不负责在落库后再次发送 `message-topic`。
+
+| 维度 | 双 Topic 并行（当前选择） | 先持久化再推送 |
+|---|---|---|
+| 在线延迟 | 更低，推送不等待 MySQL | 更高，多一次数据库和 Kafka 链路等待 |
+| 扩容边界 | 存储、推送消费者可独立扩容 | 推送入口依赖存储消费者 |
+| MySQL 故障 | 实时推送仍可能成功 | 推送通常一起停止 |
+| 可见性 | 接收者可能先看到尚未落库的消息 | 推送时通常已经落库 |
+| 失败组合 | 可能“推送成功、存储失败”或反过来 | 主要是“已存储、推送失败” |
+| 补偿要求 | 必须有持久化 ACK、幂等、状态查询和离线补拉 | 仍需幂等、Outbox 或推送重试 |
+
+两种方案都成立，区别是业务目标不同：并行方案优先实时性和解耦，先存后推优先在线展示与历史记录的一致性。本项目选择并行方案，并通过“已认证发送者 + `clientMessageId`”唯一约束、`accepted/persisted/failed` ACK、状态查询以及 MySQL 游标补拉控制最终一致性。它不提供跨 MySQL 与 Kafka 的原子提交；若未来要求推送事件绝不丢失，仍需为对应链路引入 Outbox 或可靠事件表。
 
 ## 4. P0：修复红包过期任务丢失
 
@@ -556,7 +571,7 @@ message-topic
 
 优点：不需要新增服务，本机目标可以少一次转发，适合当前学习项目渐进改造。缺点是 Kafka 可能先把消息交给“没有目标连接”的实例，该实例需要多做一次 Redis 查询，并在跨实例时多一次转发。
 
-Redis Pub/Sub 只适合实时推送。普通聊天有 `store-topic -> MySQL -> Canal -> Redis` 存储链路，但两路 Kafka 发送独立，且当前热区间补拉依赖 Redis，没有覆盖该区间的 MySQL 回源兜底。因此“推送失败可补拉恢复”是需要补齐和验收的目标，不能当作当前无条件保证。
+Redis Pub/Sub 只适合实时推送。普通聊天的 `store-topic` 最终写入 MySQL，`/api/message/offline/sync` 已以 MySQL 为完整数据源，Canal 写入的 Redis 热数据不再是可靠补拉的必要条件。因此 `message-topic` 或 Redis Pub/Sub 推送失败时，客户端可以通过签名游标补拉已持久化消息；仍需重点验证“存储事件失败但实时推送成功”和“延迟落库消息落在已推进游标之前”这两个并行链路边界。
 
 系统通知另走 `system-notification-topic`；当前仅在路由失败且检测到离线标记时发送 `store-notification-topic`，仓库尚无对应存储消费者和通知历史接口。不能将系统通知按普通聊天消息写入或通过 `/api/message/offline` 补拉；第一版应重新查询好友申请等业务列表，通知历史作为后续独立能力补齐。
 
