@@ -786,6 +786,8 @@ status: 0 | 1
 
 ### 11.1 本地持久化
 
+当前 React 原型已提供两组原生桥接契约：令牌和当前账号通过 `chatIMSecureStorage` 接入 Keychain/Keystore，账号数据通过 `chatIMAccountStorage` 接入 SQLite。离线同步游标已经迁移到账号桥接；浏览器无桥接时继续按 `userId` 隔离写入 `localStorage`，仅用于开发联调。其余会话、消息、草稿、未读和待确认消息仍需随正式移动端工程迁移到 SQLite。
+
 安全存储：
 
 - accessToken；

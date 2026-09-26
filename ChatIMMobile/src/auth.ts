@@ -1,3 +1,10 @@
+import {
+  readSecureValue,
+  removeSecureValue,
+  storageMode,
+  writeSecureValue,
+} from "./storage";
+
 export type AuthSession = {
   userId: string | number;
   email: string;
@@ -35,9 +42,17 @@ type RegisterPayload = PasswordLoginPayload & {
 
 type TokenPair = Pick<AuthSession, "accessToken" | "refreshToken">;
 
-const STORAGE_KEY = "chatim.auth.session.v1";
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "http://localhost:10010").replace(/\/$/, "");
+const STORAGE_KEY = "chatim.auth.session.v2";
+const LEGACY_STORAGE_KEY = "chatim.auth.session.v1";
+const ENVIRONMENT_ID = import.meta.env.VITE_ENVIRONMENT_ID || API_BASE;
 const DEMO_PASSWORD = "123456";
+
+type StoredSession = {
+  version: 2;
+  environment: string;
+  session: AuthSession;
+};
 
 export class AuthApiError extends Error {
   constructor(message: string) {
@@ -182,24 +197,80 @@ export async function logout(accessToken: string) {
   });
 }
 
-export function saveSession(session: AuthSession) {
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
+export async function saveSession(session: AuthSession) {
+  const stored: StoredSession = {
+    version: 2,
+    environment: ENVIRONMENT_ID,
+    session,
+  };
+  removeBrowserSessionCopies();
+  await writeSecureValue(STORAGE_KEY, JSON.stringify(stored));
+  removeBrowserSessionCopies();
 }
 
-export function loadSession(): AuthSession | null {
-  const stored = window.localStorage.getItem(STORAGE_KEY);
-  if (!stored) return null;
+export async function loadSession(): Promise<AuthSession | null> {
+  const stored = await readSecureValue(STORAGE_KEY);
+  const restored = parseStoredSession(stored);
+  if (restored) return restored;
 
+  const legacy = parseLegacySession(window.localStorage.getItem(LEGACY_STORAGE_KEY));
+  if (legacy) {
+    await saveSession(legacy);
+    return legacy;
+  }
+  await removeSecureValue(STORAGE_KEY);
+  removeBrowserSessionCopies();
+  return null;
+}
+
+export async function clearSession() {
   try {
-    return JSON.parse(stored) as AuthSession;
+    await removeSecureValue(STORAGE_KEY);
+  } finally {
+    removeBrowserSessionCopies();
+  }
+}
+
+export function authStorageMode() {
+  return storageMode();
+}
+
+function parseStoredSession(value: string | null) {
+  if (!value) return null;
+  try {
+    const stored = JSON.parse(value) as StoredSession;
+    if (stored.version !== 2 || stored.environment !== ENVIRONMENT_ID) return null;
+    return isAuthSession(stored.session) ? stored.session : null;
   } catch {
-    window.localStorage.removeItem(STORAGE_KEY);
     return null;
   }
 }
 
-export function clearSession() {
-  window.localStorage.removeItem(STORAGE_KEY);
+function parseLegacySession(value: string | null) {
+  if (!value) return null;
+  try {
+    const session = JSON.parse(value) as AuthSession;
+    return isAuthSession(session) ? session : null;
+  } catch {
+    return null;
+  }
+}
+
+function isAuthSession(value: unknown): value is AuthSession {
+  if (!value || typeof value !== "object") return false;
+  const session = value as Partial<AuthSession>;
+  return (typeof session.userId === "string" || typeof session.userId === "number")
+    && typeof session.email === "string"
+    && typeof session.nickname === "string"
+    && typeof session.accessToken === "string"
+    && session.accessToken.length > 0
+    && typeof session.refreshToken === "string"
+    && session.refreshToken.length > 0;
+}
+
+function removeBrowserSessionCopies() {
+  window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+  if (storageMode() === "native-secure") window.localStorage.removeItem(STORAGE_KEY);
 }
 
 export const demoModeEnabled = isDemoMode();

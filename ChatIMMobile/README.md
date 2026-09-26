@@ -51,7 +51,8 @@ $env:FRONTEND_ORIGIN="http://localhost:4173"
 - `POST /api/contact/{userId}/application/{status}`
 - `POST /api/group`
 - `POST /api/group/invite`
-- `GET /api/user/uploadUrl?fileName=`，随后直接 `PUT` 到 MinIO 预签名地址
+- `GET /api/file/{sessionId}/upload-url?fileName=`，返回会话内稳定对象标识，随后直接 `PUT` 到 MinIO 预签名地址
+- `GET /api/file/{sessionId}/download-url?objectName=`，校验会话权限后获取短期下载地址
 - `WS /ws/netty`，文本心跳与消息收发
 - `POST /api/message/offline/sync`
 - `POST /api/message/history`
@@ -74,7 +75,16 @@ $env:FRONTEND_ORIGIN="http://localhost:4173"
 - `DELETE /api/group/{sessionId}`
 - `GET /api/message/unread`
 
-当前浏览器版本用 `localStorage` 模拟移动端安全存储。正式客户端接入时应将访问令牌和刷新令牌迁移到系统安全存储。
+认证数据统一通过 `window.chatIMSecureStorage` 适配层读写。原生容器必须将该桥接实现为 iOS Keychain 或 Android Keystore；没有原生桥接时，浏览器原型才使用 `localStorage` 联调。存储内容带版本和 `VITE_ENVIRONMENT_ID`，不会跨环境恢复令牌，并会自动迁移旧版浏览器会话。退出登录会同时清除认证数据及当前 `userId` 对应的草稿、消息、同步游标等缓存。
+
+原生桥接需要提供以下异步或同步方法：
+
+```ts
+window.chatIMSecureStorage = { getItem, setItem, removeItem };
+window.chatIMAccountStorage = { getItem, setItem, removeItem, clearUser };
+```
+
+`chatIMSecureStorage` 保存令牌和当前账号；`chatIMAccountStorage` 由账号隔离的 SQLite 数据库实现，所有方法的第一个参数均为 `userId`，离线同步游标已经通过该桥接读写。浏览器回退仅用于演示和开发，不能视为生产安全存储。
 
 ## 当前接口边界
 

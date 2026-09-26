@@ -121,6 +121,7 @@ import {
   type SessionPreferenceResult,
   type SessionSummary,
 } from "./sessions";
+import { clearAccountStorage } from "./storage";
 
 type Phase = "booting" | "signed-out" | "signed-in";
 type LoginMode = "password" | "code";
@@ -134,7 +135,7 @@ export default function Prototype() {
 
   useEffect(() => {
     const timer = window.setTimeout(async () => {
-      const storedSession = loadSession();
+      const storedSession = await loadSession();
       if (!storedSession) {
         setPhase("signed-out");
         return;
@@ -149,11 +150,14 @@ export default function Prototype() {
       try {
         const renewedTokens = await refreshSession(storedSession.refreshToken);
         const renewedSession = { ...storedSession, ...renewedTokens };
-        saveSession(renewedSession);
+        await saveSession(renewedSession);
         setSession(renewedSession);
         setPhase("signed-in");
       } catch {
-        clearSession();
+        await Promise.allSettled([
+          clearSession(),
+          clearAccountStorage(storedSession.userId),
+        ]);
         setSession(null);
         setPhase("signed-out");
       }
@@ -162,15 +166,19 @@ export default function Prototype() {
     return () => window.clearTimeout(timer);
   }, []);
 
-  const onAuthenticated = (nextSession: AuthSession) => {
-    saveSession(nextSession);
+  const onAuthenticated = async (nextSession: AuthSession) => {
+    await saveSession(nextSession);
     setSession(nextSession);
     setPhase("signed-in");
   };
 
   const onLogout = async () => {
-    const accessToken = session?.accessToken;
-    clearSession();
+    const activeSession = session;
+    const accessToken = activeSession?.accessToken;
+    await Promise.allSettled([
+      clearSession(),
+      activeSession ? clearAccountStorage(activeSession.userId) : Promise.resolve(),
+    ]);
     setSession(null);
     setPhase("signed-out");
     if (accessToken) {
@@ -243,14 +251,14 @@ function SplashScreen() {
   );
 }
 
-function loginFlowScreen(onAuthenticated: (session: AuthSession) => void): FlowScreen {
+function loginFlowScreen(onAuthenticated: (session: AuthSession) => Promise<void>): FlowScreen {
   return {
     id: "login",
     render: (flow) => <LoginScreen flow={flow} onAuthenticated={onAuthenticated} />,
   };
 }
 
-function registerFlowScreen(onAuthenticated: (session: AuthSession) => void): FlowScreen {
+function registerFlowScreen(onAuthenticated: (session: AuthSession) => Promise<void>): FlowScreen {
   return {
     id: "register",
     headerHeight: 58,
@@ -272,7 +280,7 @@ function LoginScreen({
   onAuthenticated,
 }: {
   flow: FlowControls;
-  onAuthenticated: (session: AuthSession) => void;
+  onAuthenticated: (session: AuthSession) => Promise<void>;
 }) {
   const keyboard = useKeyboard();
   const [mode, setMode] = useState<LoginMode>("password");
@@ -349,7 +357,7 @@ function LoginScreen({
         mode === "password"
           ? await loginWithPassword({ email: normalizedEmail, password })
           : await loginWithCode({ email: normalizedEmail, code });
-      onAuthenticated(nextSession);
+      await onAuthenticated(nextSession);
     } catch (error) {
       showError(toErrorMessage(error));
     } finally {
@@ -502,7 +510,7 @@ function LoginScreen({
   );
 }
 
-function RegisterScreen({ onAuthenticated }: { onAuthenticated: (session: AuthSession) => void }) {
+function RegisterScreen({ onAuthenticated }: { onAuthenticated: (session: AuthSession) => Promise<void> }) {
   const keyboard = useKeyboard();
   const [nickname, setNickname] = useState("");
   const [email, setEmail] = useState(demoModeEnabled ? "new@chatim.cn" : "");
@@ -587,7 +595,7 @@ function RegisterScreen({ onAuthenticated }: { onAuthenticated: (session: AuthSe
         password,
         confirmPassword,
       });
-      onAuthenticated(nextSession);
+      await onAuthenticated(nextSession);
     } catch (error) {
       showError(toErrorMessage(error));
     } finally {
@@ -747,6 +755,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
   const [connectionState, setConnectionState] = useState<RealtimeConnectionState>("connecting");
   const [syncState, setSyncState] = useState<"idle" | "syncing" | "synced" | "failed">("idle");
   const [lastSyncTime, setLastSyncTime] = useState("");
+  const [offlineCursorReady, setOfflineCursorReady] = useState(false);
   const realtimeRef = useRef<ChatRealtimeClient | null>(null);
   const conversationsRef = useRef(conversations);
   const messagesRef = useRef(messages);
@@ -756,7 +765,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
   const submittedReadPositionsRef = useRef<Record<string, string>>({});
   const pendingSessionPreferencesRef = useRef<Map<string, SessionPreferenceResult>>(new Map());
   const activeConversationIdRef = useRef<string | null>(null);
-  const offlineCursorRef = useRef<string | null>(loadOfflineCursor(session.userId));
+  const offlineCursorRef = useRef<string | null>(null);
   const seenServerKeysRef = useRef<Set<string> | null>(null);
   const applyServerMessagesRef = useRef<(
     incoming: RealtimeMessage[],
@@ -783,6 +792,25 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
   const unreadTotal = conversations.reduce((total, item) => total + item.unread, 0);
   const activeConversation = conversations.find((item) => item.id === activeConversationId) ?? null;
   const menuConversation = conversations.find((item) => item.id === conversationMenuId) ?? null;
+
+  useEffect(() => {
+    let active = true;
+    setOfflineCursorReady(false);
+    void loadOfflineCursor(session.userId)
+      .then((cursor) => {
+        if (!active) return;
+        offlineCursorRef.current = cursor;
+        setOfflineCursorReady(true);
+      })
+      .catch(() => {
+        if (!active) return;
+        offlineCursorRef.current = null;
+        setOfflineCursorReady(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [session.userId]);
   const activeLastMessageId = activeConversation?.lastMessageId;
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filteredConversations = conversations.filter((item) =>
@@ -1288,6 +1316,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
   };
 
   useEffect(() => {
+    if (!offlineCursorReady) return;
     let active = true;
     let syncRun = 0;
 
@@ -1310,7 +1339,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
               && !invalidCursorReset) {
               cursor = null;
               offlineCursorRef.current = null;
-              clearOfflineCursor(session.userId);
+              await clearOfflineCursor(session.userId);
               invalidCursorReset = true;
               hasMore = true;
               continue;
@@ -1325,7 +1354,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
           if (nextCursor && nextCursor !== cursor) {
             cursor = nextCursor;
             offlineCursorRef.current = nextCursor;
-            saveOfflineCursor(session.userId, nextCursor);
+            await saveOfflineCursor(session.userId, nextCursor);
           } else if (hasMore) {
             throw new RealtimeApiError("消息同步游标没有前进");
           }
@@ -1395,7 +1424,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
       if (realtimeRef.current === client) realtimeRef.current = null;
       if (syncOfflineRef.current === syncOffline) syncOfflineRef.current = null;
     };
-  }, [session.accessToken, session.nettyUri, session.refreshToken, session.userId]);
+  }, [offlineCursorReady, session.accessToken, session.nettyUri, session.refreshToken, session.userId]);
 
   useEffect(() => {
     if (demoModeEnabled || !activeConversationId) return;

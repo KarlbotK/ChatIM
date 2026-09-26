@@ -1,4 +1,5 @@
 import { demoModeEnabled, type AuthSession } from "./auth";
+import { readAccountValue, removeAccountValue, writeAccountValue } from "./storage";
 
 export type RealtimeConnectionState =
   | "connecting"
@@ -363,15 +364,15 @@ export class ChatRealtimeClient {
 }
 
 export function loadOfflineCursor(userId: AuthSession["userId"]) {
-  return window.localStorage.getItem(`${OFFLINE_CURSOR_PREFIX}.${userId}`);
+  return readAccountValue(userId, OFFLINE_CURSOR_PREFIX);
 }
 
 export function saveOfflineCursor(userId: AuthSession["userId"], cursor: string) {
-  window.localStorage.setItem(`${OFFLINE_CURSOR_PREFIX}.${userId}`, cursor);
+  return writeAccountValue(userId, OFFLINE_CURSOR_PREFIX, cursor);
 }
 
 export function clearOfflineCursor(userId: AuthSession["userId"]) {
-  window.localStorage.removeItem(`${OFFLINE_CURSOR_PREFIX}.${userId}`);
+  return removeAccountValue(userId, OFFLINE_CURSOR_PREFIX);
 }
 
 export async function syncOfflineMessages(session: AuthSession, cursor: string | null, limit = 50) {
