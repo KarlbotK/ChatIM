@@ -21,6 +21,7 @@ import io.netty.channel.Channel;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
@@ -41,6 +42,12 @@ public class MessageDeliveryService {
             "image/jpeg",
             "image/png",
             "image/webp"
+    );
+    private static final DefaultRedisScript<Long> REPLACE_DELIVERY_RECORD = new DefaultRedisScript<>(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then "
+                    + "redis.call('set', KEYS[1], ARGV[2], 'EX', ARGV[3]); return 1 "
+                    + "else return 0 end",
+            Long.class
     );
 
     private final StringRedisTemplate stringRedisTemplate;
@@ -73,9 +80,9 @@ public class MessageDeliveryService {
         }
 
         String deliveryKey = deliveryKey(senderId, clientMessageId);
-        MessageDeliveryRecord existing = readRecord(deliveryKey);
-        if (existing != null) {
-            sendAck(channel, existing);
+        StoredDelivery existing = readStoredDelivery(deliveryKey);
+        if (existing != null && !isRetryableFailure(existing.record())) {
+            sendAck(channel, existing.record());
             return;
         }
 
@@ -89,13 +96,19 @@ public class MessageDeliveryService {
                     validationFailure.message()
             );
             failure.setSenderId(senderId);
-            reserve(deliveryKey, failure);
+            if (existing == null) {
+                reserve(deliveryKey, failure);
+            } else {
+                replaceRecord(deliveryKey, existing.json(), failure);
+            }
             sendAck(channel, readRecord(deliveryKey, failure));
             return;
         }
 
-        request.setMessageId(SnowflakeDynamicUtil.nextId());
-        request.setCreatedTime(new Date());
+        Long retryMessageId = existing == null ? null : existing.record().getMessageId();
+        Long retryCreatedTime = existing == null ? null : existing.record().getCreatedTime();
+        request.setMessageId(retryMessageId == null ? SnowflakeDynamicUtil.nextId() : retryMessageId);
+        request.setCreatedTime(new Date(retryCreatedTime == null ? System.currentTimeMillis() : retryCreatedTime));
         MessageDeliveryRecord accepted = MessageDeliveryRecord.builder()
                 .clientMessageId(clientMessageId)
                 .messageId(request.getMessageId())
@@ -105,7 +118,10 @@ public class MessageDeliveryService {
                 .createdTime(request.getCreatedTime().getTime())
                 .build();
 
-        if (!reserve(deliveryKey, accepted)) {
+        boolean claimed = existing == null
+                ? reserve(deliveryKey, accepted)
+                : replaceRecord(deliveryKey, existing.json(), accepted);
+        if (!claimed) {
             sendAck(channel, readRecord(deliveryKey, accepted));
             return;
         }
@@ -308,9 +324,25 @@ public class MessageDeliveryService {
         return Boolean.TRUE.equals(created);
     }
 
-    private MessageDeliveryRecord readRecord(String key) {
+    private boolean replaceRecord(String key, String expectedJson, MessageDeliveryRecord replacement) {
+        Long replaced = stringRedisTemplate.execute(
+                REPLACE_DELIVERY_RECORD,
+                List.of(key),
+                expectedJson,
+                JSONUtil.toJsonStr(replacement),
+                String.valueOf(TimeUnit.DAYS.toSeconds(CommonConstant.MESSAGE_DELIVERY_TTL_DAYS))
+        );
+        return Long.valueOf(1L).equals(replaced);
+    }
+
+    private StoredDelivery readStoredDelivery(String key) {
         String value = stringRedisTemplate.opsForValue().get(key);
-        return value == null ? null : JSONUtil.toBean(value, MessageDeliveryRecord.class);
+        return value == null ? null : new StoredDelivery(value, JSONUtil.toBean(value, MessageDeliveryRecord.class));
+    }
+
+    private MessageDeliveryRecord readRecord(String key) {
+        StoredDelivery stored = readStoredDelivery(key);
+        return stored == null ? null : stored.record();
     }
 
     private MessageDeliveryRecord readRecord(String key, MessageDeliveryRecord fallback) {
@@ -323,11 +355,6 @@ public class MessageDeliveryService {
             MessageDeliveryRecord accepted,
             Channel channel,
             ErrorCode errorCode) {
-        MessageDeliveryRecord current = readRecord(key);
-        if (current != null && MessageDeliveryStatus.PERSISTED.equals(current.getStatus())) {
-            sendAck(channel, current);
-            return;
-        }
         MessageDeliveryRecord failure = failed(
                 accepted.getClientMessageId(),
                 accepted.getMessageId(),
@@ -335,13 +362,19 @@ public class MessageDeliveryService {
                 errorCode
         );
         failure.setSenderId(accepted.getSenderId());
-        stringRedisTemplate.opsForValue().set(
-                key,
-                JSONUtil.toJsonStr(failure),
-                CommonConstant.MESSAGE_DELIVERY_TTL_DAYS,
-                TimeUnit.DAYS
-        );
-        sendAck(channel, failure);
+        if (replaceRecord(key, JSONUtil.toJsonStr(accepted), failure)) {
+            sendAck(channel, failure);
+            return;
+        }
+        sendAck(channel, readRecord(key, failure));
+    }
+
+    private boolean isRetryableFailure(MessageDeliveryRecord record) {
+        if (!MessageDeliveryStatus.FAILED.equals(record.getStatus()) || record.getErrorCode() == null) {
+            return false;
+        }
+        return record.getErrorCode() == ErrorCode.MESSAGE_PERSIST_FAILED.getCode()
+                || record.getErrorCode() == ValidationError.SERVICE_UNAVAILABLE.getCode();
     }
 
     private MessageDeliveryRecord failed(
@@ -391,5 +424,8 @@ public class MessageDeliveryService {
     }
 
     record DeliveryFailure(int code, String message) {
+    }
+
+    private record StoredDelivery(String json, MessageDeliveryRecord record) {
     }
 }

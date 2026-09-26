@@ -2338,6 +2338,28 @@
   color: #aa5e49;
 }
 
+.message-status-action {
+  appearance: none;
+  margin: -4px -5px -4px 0;
+  padding: 4px 5px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.message-status-action:active {
+  background: rgba(170, 94, 73, 0.1);
+}
+
+.message-status-action:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
 .chat-empty {
   display: flex;
   min-height: 340px;

@@ -957,6 +957,9 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
             createdTime: ack.createdTime ?? item.createdTime,
             time: ack.createdTime ? formatClock(new Date(ack.createdTime)) : item.time,
             status: ack.stage === "persisted" ? "sent" : "failed",
+            failureSource: ack.stage === "failed" ? "delivery" : undefined,
+            errorCode: ack.stage === "failed" ? ack.errorCode ?? undefined : undefined,
+            errorMessage: ack.stage === "failed" ? ack.errorMessage ?? undefined : undefined,
           };
         });
       });
@@ -1516,12 +1519,14 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
     const accepted = realtimeRef.current?.send(payload) ?? false;
     window.setTimeout(() => {
       void (async () => {
-        let resolvedStatus: MessageStatus = "unknown";
         if (accepted) {
           try {
             const result = await fetchMessageStatus(session, clientMessageId);
-            if (result.status === "persisted") resolvedStatus = "sent";
-            if (result.status === "failed") resolvedStatus = "failed";
+            if (result.status === "persisted" || result.status === "failed") {
+              const { status: stage, ...ack } = result;
+              applyMessageAck({ ...ack, stage });
+              return;
+            }
           } catch {
             // Keep an unknown result when the status service is temporarily unavailable.
           }
@@ -1530,13 +1535,101 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
           ...items,
           [conversation.id]: (items[conversation.id] ?? []).map((item) =>
             item.clientMessageId === clientMessageId && item.status === "sending"
-              ? { ...item, status: resolvedStatus }
+              ? { ...item, status: "unknown" }
               : item,
           ),
         }));
       })();
     }, accepted ? 8_000 : 260);
     return accepted;
+  };
+
+  const resolveOrRetryMessage = async (conversation: Conversation, message: ChatMessage) => {
+    if (!message.clientMessageId) return "这条消息缺少发送标识，无法确认结果";
+    if (message.failureSource === "upload" && !message.mediaObjectName) {
+      return "图片尚未上传成功，请重新选择图片";
+    }
+
+    let result;
+    try {
+      result = await fetchMessageStatus(session, message.clientMessageId);
+    } catch (error) {
+      return toRealtimeErrorMessage(error);
+    }
+
+    if (result.status === "persisted") {
+      const { status: stage, ...ack } = result;
+      applyMessageAck({ ...ack, stage });
+      return "消息已经发送成功";
+    }
+    if (result.status === "accepted") {
+      setMessages((items) => ({
+        ...items,
+        [conversation.id]: (items[conversation.id] ?? []).map((item) =>
+          item.clientMessageId === message.clientMessageId
+            ? {
+              ...item,
+              status: "unknown",
+              failureSource: undefined,
+              errorCode: undefined,
+              errorMessage: undefined,
+            }
+            : item,
+        ),
+      }));
+      setConversations((items) => items.map((item) => item.id === conversation.id
+        ? { ...item, failed: false }
+        : item));
+      return "服务端仍在处理中，请稍后再确认";
+    }
+
+    const retryableFailure = result.status === "failed"
+      && (result.errorCode === 90006 || result.errorCode === 91008);
+    if (result.status === "failed" && !retryableFailure) {
+      const { status: stage, ...ack } = result;
+      applyMessageAck({ ...ack, stage });
+      return result.errorMessage || "消息发送失败，请检查会话状态";
+    }
+
+    if (message.kind === "image" && !message.mediaObjectName) {
+      return "图片尚未上传成功，请重新选择图片";
+    }
+
+    setMessages((items) => ({
+      ...items,
+      [conversation.id]: (items[conversation.id] ?? []).map((item) =>
+        item.clientMessageId === message.clientMessageId
+          ? {
+            ...item,
+            status: "sending",
+            failureSource: undefined,
+            errorCode: undefined,
+            errorMessage: undefined,
+          }
+          : item,
+      ),
+    }));
+    setConversations((items) => items.map((item) => item.id === conversation.id
+      ? { ...item, failed: false }
+      : item));
+
+    const started = sendRealtimeMessage(
+      conversation,
+      message.kind === "image" ? 1 : 0,
+      message.kind === "image" ? "[图片]" : message.content,
+      message.clientMessageId,
+      message.kind === "image"
+        ? {
+          objectName: message.mediaObjectName,
+          mediaContentType: message.mediaContentType,
+          mediaWidth: message.imageWidth,
+          mediaHeight: message.imageHeight,
+          mediaSize: message.imageSize,
+          originalName: message.imageName,
+        }
+        : {},
+    );
+    return started ? "正在重新发送" : "连接尚未恢复，消息结果仍待确认";
   };
 
   const openConversation = (conversationId: string) => {
@@ -1962,6 +2055,9 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
                     mediaContentType: uploaded.mediaContentType,
                     uploadProgress: 100,
                     status: "sending",
+                    failureSource: undefined,
+                    errorCode: undefined,
+                    errorMessage: undefined,
                   }
                   : item,
               ),
@@ -1979,7 +2075,9 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
               setMessages((items) => ({
                 ...items,
                 [activeConversation.id]: (items[activeConversation.id] ?? []).map((item) =>
-                  item.id === clientMessageId ? { ...item, status: "failed" } : item,
+                  item.id === clientMessageId
+                    ? { ...item, status: "failed", failureSource: "upload", errorMessage: toMediaErrorMessage(error) }
+                    : item,
                 ),
               }));
               setConversations((items) => items.map((item) => item.id === activeConversation.id
@@ -1989,6 +2087,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
             throw error;
           }
         }}
+        onResolveMessage={(message) => resolveOrRetryMessage(activeConversation, message)}
         onLoadHistory={async () => {
           const currentMessages = messages[activeConversation.id] ?? [];
           const timestamps = currentMessages
@@ -2315,6 +2414,9 @@ type ChatMessage = {
   mediaObjectName?: string;
   mediaContentType?: string;
   uploadProgress?: number;
+  failureSource?: "upload" | "delivery";
+  errorCode?: number;
+  errorMessage?: string;
 };
 
 type Contact = {
@@ -3480,6 +3582,7 @@ function ChatScreen({
   onOpenDetails,
   onSend,
   onSendImage,
+  onResolveMessage,
   onLoadHistory,
   connectionLabel,
 }: {
@@ -3492,6 +3595,7 @@ function ChatScreen({
   onOpenDetails: () => void;
   onSend: (content: string) => void;
   onSendImage: (file: File) => Promise<void>;
+  onResolveMessage: (message: ChatMessage) => Promise<string>;
   onLoadHistory: () => Promise<number>;
   connectionLabel: string;
 }) {
@@ -3503,6 +3607,7 @@ function ChatScreen({
   const [imageBusy, setImageBusy] = useState(false);
   const [previewImage, setPreviewImage] = useState<ChatMessage | null>(null);
   const [historyBusy, setHistoryBusy] = useState(false);
+  const [messageActionId, setMessageActionId] = useState<string | null>(null);
 
   useEffect(() => {
     if (isKeyboardVisible) setShowTools(false);
@@ -3557,6 +3662,25 @@ function ChatScreen({
     }
   };
 
+  const resolveMessage = async (message: ChatMessage) => {
+    if (messageActionId) return;
+    keyboard.hide();
+    if (message.failureSource === "upload" && !message.mediaObjectName) {
+      setToast("请重新选择图片后发送");
+      selectImage();
+      window.setTimeout(() => setToast(""), 2_200);
+      return;
+    }
+    setMessageActionId(message.id);
+    setToast("正在确认消息结果…");
+    try {
+      setToast(await onResolveMessage(message));
+    } finally {
+      setMessageActionId(null);
+      window.setTimeout(() => setToast(""), 2_200);
+    }
+  };
+
   return (
     <div className="chat-screen" style={{ "--chat-bottom-inset": `${bottomInset}px` } as CSSProperties}>
       <header className="chat-header">
@@ -3601,8 +3725,29 @@ function ChatScreen({
                   {message.status === "sending" ? <><i />发送中</> : null}
                   {message.status === "uploading" ? <><i />上传中 {message.uploadProgress || 0}%</> : null}
                   {message.status === "sent" ? <><CheckIcon />已发送</> : null}
-                  {message.status === "unknown" ? <>结果待确认</> : null}
-                  {message.status === "failed" ? <>发送失败</> : null}
+                  {message.status === "unknown" ? (
+                    <button
+                      type="button"
+                      className="message-status-action"
+                      disabled={messageActionId === message.id}
+                      onClick={() => void resolveMessage(message)}
+                    >{messageActionId === message.id ? "正在确认…" : "结果待确认 · 查看"}</button>
+                  ) : null}
+                  {message.status === "failed" ? (
+                    <button
+                      type="button"
+                      className="message-status-action"
+                      disabled={messageActionId === message.id}
+                      title={message.errorMessage}
+                      onClick={() => void resolveMessage(message)}
+                    >{messageActionId === message.id
+                        ? "正在确认…"
+                        : message.failureSource === "upload"
+                          ? "上传失败 · 重新选择"
+                          : message.errorCode === 90006 || message.errorCode === 91008
+                            ? "发送失败 · 重试"
+                            : "发送失败 · 查看"}</button>
+                  ) : null}
                 </div>
               </div>
             </div>

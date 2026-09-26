@@ -364,7 +364,7 @@ Authorization: Bearer <accessToken>
 - 使用 `messageId` 去重；
 - 使用 `clientMessageId` 归并本地待发送消息。
 
-发送者收到 `accepted` 时消息仍显示“发送中”，收到 `persisted` 后才显示“已发送”。ACK 丢失或超时时，客户端通过 `/api/message/status` 查询 `accepted`、`persisted`、`failed` 或 `notFound`，不会把普通实时回推误认为落库成功。
+发送者收到 `accepted` 时消息仍显示“发送中”，收到 `persisted` 后才显示“已发送”。ACK 丢失或超时时，客户端通过 `/api/message/status` 查询 `accepted`、`persisted`、`failed` 或 `notFound`，不会把普通实时回推误认为落库成功。用户可以点击“结果待确认”或“发送失败”再次查询：已持久化的消息直接归并，仍在处理的消息不重发，只有确认未找到或属于可恢复的存储/依赖服务失败时才复用原 `clientMessageId` 手动重试。服务端通过 Redis 原子比较替换重新认领失败记录，并复用原 `messageId`，使并行推送的重复事件仍能被接收端去重；权限和参数错误只展示原因。
 
 离线同步使用服务端签名且绑定账号的联合游标，以 `createdTime + messageId` 稳定翻页。MySQL 是完整数据源，客户端每页合并成功后才保存 `nextCursor`，Redis 热数据缺失不会造成同步遗漏。
 
@@ -400,7 +400,7 @@ Authorization: Bearer <accessToken>
 下一轮按以下顺序推进：
 
 1. 原生账号数据库与 SQLite 缓存接入。
-2. 消息手动重试和红包主流程。
+2. 红包主流程及账务幂等。
 3. 群昵称和全员禁言。
 4. 好友备注和基础联系人管理。
 
