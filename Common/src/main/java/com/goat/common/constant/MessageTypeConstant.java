@@ -43,6 +43,11 @@ public class MessageTypeConstant {
     public static final int TYPE_SYSTEM_GROUP_KICK = 104;
 
     /**
+     * 系统通知：群名称、公告或头像发生变化。
+     */
+    public static final int TYPE_SYSTEM_GROUP_PROFILE_UPDATED = 105;
+
+    /**
      * 聊天消息类型范围：0-99
      */
     public static final int CHAT_MESSAGE_MIN = 0;

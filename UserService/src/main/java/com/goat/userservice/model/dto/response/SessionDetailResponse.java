@@ -18,6 +18,8 @@ public class SessionDetailResponse {
 
     private String avatar;
 
+    private String avatarObjectName;
+
     private String announcement;
 
     private SessionParticipantResponse peer;

@@ -9,6 +9,7 @@ import com.goat.userservice.model.dto.FriendApplicationNotificationDTO;
 import com.goat.userservice.model.dto.NewGroupSessionNotificationDTO;
 import com.goat.userservice.model.dto.NewSessionNotificationDTO;
 import com.goat.userservice.model.dto.SystemNotificationMessage;
+import com.goat.userservice.model.dto.response.GroupProfileResponse;
 import com.goat.userservice.service.NotificationService;
 
 import cn.hutool.json.JSONUtil;
@@ -176,6 +177,37 @@ public class NotificationServiceImpl implements NotificationService {
             sendNotification(message,"新群聊会话通知");
         }catch (Exception e){
             log.error("发送新群聊会话通知失败，用户ID: {}, 会话ID: {}, 错误: {}", userID, sessionId, e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public void pushGroupProfileUpdated(
+            Long actorId,
+            Long userId,
+            Long sessionId,
+            GroupProfileResponse profile) {
+        try {
+            SystemNotificationMessage message = new SystemNotificationMessage();
+            message.setMessageId(generateMessageId());
+            message.setSessionId(sessionId);
+            message.setSenderId(actorId);
+            message.setReceiverId(userId);
+            message.setType(MessageTypeConstant.TYPE_SYSTEM_GROUP_PROFILE_UPDATED);
+            message.setSessionType(SessionTypeConstant.GROUP_TYPE);
+            message.setTimestamp(System.currentTimeMillis());
+
+            Map<String, Object> body = new HashMap<>();
+            body.put("sessionName", profile.getName());
+            body.put("announcement", profile.getAnnouncement());
+            body.put("avatar", profile.getAvatar());
+            body.put("avatarObjectName", profile.getAvatarObjectName());
+            body.put("updatedTime", profile.getUpdatedTime());
+            message.setBody(body);
+
+            sendNotification(message, "群资料更新通知");
+        } catch (Exception exception) {
+            log.error("发送群资料更新通知失败，用户ID: {}, 会话ID: {}, 错误: {}",
+                    userId, sessionId, exception.getMessage(), exception);
         }
     }
 }

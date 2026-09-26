@@ -41,6 +41,17 @@ export type RealtimeMessageAck = {
   errorMessage?: string | null;
 };
 
+export type RealtimeSystemNotification = {
+  messageId: string;
+  sessionId?: string | number | null;
+  senderId?: string | number | null;
+  receiverId: string | number;
+  type: number;
+  sessionType?: number | null;
+  timestamp: number;
+  body: Record<string, unknown>;
+};
+
 export type MessageStatusResult = Omit<RealtimeMessageAck, "stage"> & {
   status: MessageDeliveryStatus;
 };
@@ -101,6 +112,7 @@ type ClientOptions = {
   onState: (state: RealtimeConnectionState) => void;
   onMessage: (message: RealtimeMessage) => void;
   onAck: (ack: RealtimeMessageAck) => void;
+  onNotification: (notification: RealtimeSystemNotification) => void;
   onConnected: () => void;
 };
 
@@ -109,6 +121,7 @@ export class ChatRealtimeClient {
   private readonly onState: ClientOptions["onState"];
   private readonly onMessage: ClientOptions["onMessage"];
   private readonly onAck: ClientOptions["onAck"];
+  private readonly onNotification: ClientOptions["onNotification"];
   private readonly onConnected: ClientOptions["onConnected"];
   private socket: WebSocket | null = null;
   private stopped = false;
@@ -125,6 +138,7 @@ export class ChatRealtimeClient {
     this.onState = options.onState;
     this.onMessage = options.onMessage;
     this.onAck = options.onAck;
+    this.onNotification = options.onNotification;
     this.onConnected = options.onConnected;
   }
 
@@ -257,9 +271,14 @@ export class ChatRealtimeClient {
         try {
           const payload = JSON.parse(String(event.data)) as
             | RealtimeMessage
+            | RealtimeSystemNotification
             | { event?: string; data?: RealtimeMessageAck };
           if ("event" in payload && payload.event === "message-ack" && payload.data?.clientMessageId) {
             this.onAck(payload.data);
+            return;
+          }
+          if ("type" in payload && payload.type >= 100 && payload.type <= 199 && "body" in payload) {
+            this.onNotification(payload as RealtimeSystemNotification);
             return;
           }
           const message = payload as RealtimeMessage;

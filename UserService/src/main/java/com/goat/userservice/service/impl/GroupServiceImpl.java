@@ -12,9 +12,13 @@ import com.goat.userservice.mapper.UserMapper;
 import com.goat.userservice.mapper.UserSessionMapper;
 import com.goat.userservice.model.dto.NewGroupSessionNotificationDTO;
 import com.goat.userservice.model.dto.request.InviteGroupRequest;
+import com.goat.userservice.model.dto.request.UpdateGroupAvatarRequest;
+import com.goat.userservice.model.dto.request.UpdateGroupProfileRequest;
+import com.goat.userservice.model.dto.response.GroupAvatarUploadResponse;
 import com.goat.userservice.model.dto.response.InviteGroupResponse;
 import com.goat.userservice.model.dto.response.GroupMemberListResponse;
 import com.goat.userservice.model.dto.response.GroupMemberResponse;
+import com.goat.userservice.model.dto.response.GroupProfileResponse;
 import com.goat.userservice.model.entity.Friend;
 import com.goat.userservice.model.entity.Session;
 import com.goat.userservice.model.entity.User;
@@ -32,9 +36,11 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -148,6 +154,83 @@ public class GroupServiceImpl implements GroupService {
                 .build();
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public GroupProfileResponse updateProfile(
+            Long requesterId,
+            Long sessionId,
+            UpdateGroupProfileRequest request) {
+        Session session = validateSession(sessionId);
+        UserSession membership = validateMembership(sessionId, requesterId);
+        ThrowUtils.throwIf(request.getName() == null && request.getAnnouncement() == null,
+                ErrorCode.PARAMS_ERROR, "请至少修改一项群资料");
+
+        if (request.getName() != null) {
+            ThrowUtils.throwIf(!Objects.equals(membership.getRole(), USER_ROLE_GROUP_OWNER),
+                    ErrorCode.NO_AUTH_ERROR, "只有群主可以修改群名称");
+            String name = request.getName().trim();
+            ThrowUtils.throwIf(name.isEmpty(), ErrorCode.PARAMS_ERROR, "群名称不能为空");
+            session.setName(name);
+        }
+        if (request.getAnnouncement() != null) {
+            ThrowUtils.throwIf(!Objects.equals(membership.getRole(), USER_ROLE_GROUP_OWNER)
+                            && !Objects.equals(membership.getRole(), USER_ROLE_GROUP_ADMIN),
+                    ErrorCode.NO_AUTH_ERROR, "只有群主或管理员可以修改群公告");
+            String announcement = request.getAnnouncement().trim();
+            session.setAnnouncement(announcement.isEmpty() ? null : announcement);
+        }
+        session.setUpdatedTime(new Date());
+        ThrowUtils.throwIf(sessionMapper.updateById(session) != 1, ErrorCode.OPERATION_ERROR, "群资料保存失败");
+        GroupProfileResponse profile = buildGroupProfile(session);
+        notifyGroupProfileUpdated(requesterId, sessionId, profile);
+        return profile;
+    }
+
+    @Override
+    public GroupAvatarUploadResponse createAvatarUpload(
+            Long requesterId,
+            Long sessionId,
+            String fileName) {
+        validateSession(sessionId);
+        validateOwner(sessionId, requesterId);
+        String extension = imageExtension(fileName);
+        String objectName = "group/" + sessionId + "/avatar-" + UUID.randomUUID() + "." + extension;
+        return GroupAvatarUploadResponse.builder()
+                .uploadUrl(ossUtils.uploadUrl(
+                        CommonConstant.BUCKET_NAME,
+                        objectName,
+                        CommonConstant.PICTURE_EXPIRE_TIME
+                ))
+                .downloadUrl(ossUtils.downUrl(CommonConstant.BUCKET_NAME, objectName))
+                .objectName(objectName)
+                .expiresInSeconds(CommonConstant.PICTURE_EXPIRE_TIME)
+                .build();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public GroupProfileResponse updateAvatar(
+            Long requesterId,
+            Long sessionId,
+            UpdateGroupAvatarRequest request) {
+        Session session = validateSession(sessionId);
+        validateOwner(sessionId, requesterId);
+        String objectName = request.getObjectName().trim();
+        ThrowUtils.throwIf(!objectName.startsWith("group/" + sessionId + "/avatar-"),
+                ErrorCode.PARAMS_ERROR, "头像对象不属于当前群聊");
+        imageExtension(objectName);
+        ThrowUtils.throwIf(!ossUtils.objectExists(CommonConstant.BUCKET_NAME, objectName),
+                ErrorCode.NOT_FOUND_ERROR, "上传的群头像不存在");
+
+        session.setAvatarObjectName(objectName);
+        session.setAvatar(ossUtils.downUrl(CommonConstant.BUCKET_NAME, objectName));
+        session.setUpdatedTime(new Date());
+        ThrowUtils.throwIf(sessionMapper.updateById(session) != 1, ErrorCode.OPERATION_ERROR, "群头像保存失败");
+        GroupProfileResponse profile = buildGroupProfile(session);
+        notifyGroupProfileUpdated(requesterId, sessionId, profile);
+        return profile;
+    }
+
     // GroupServiceImpl.java
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -229,6 +312,12 @@ public class GroupServiceImpl implements GroupService {
 
         ThrowUtils.throwIf(userSession == null, ErrorCode.NO_AUTH_ERROR, "您不在该群聊中");
         return userSession;
+    }
+
+    private void validateOwner(Long sessionId, Long userId) {
+        UserSession membership = validateMembership(sessionId, userId);
+        ThrowUtils.throwIf(!Objects.equals(membership.getRole(), USER_ROLE_GROUP_OWNER),
+                ErrorCode.NO_AUTH_ERROR, "只有群主可以修改群头像");
     }
     // GroupServiceImpl.java
     private List<Long> validateAndFilterFriends(Long inviterId, List<Long> inviteeIds,
@@ -356,5 +445,48 @@ public class GroupServiceImpl implements GroupService {
 
     private long dateValue(Date value) {
         return value == null ? 0L : value.getTime();
+    }
+
+    private GroupProfileResponse buildGroupProfile(Session session) {
+        return GroupProfileResponse.builder()
+                .sessionId(session.getSessionId())
+                .name(session.getName())
+                .announcement(session.getAnnouncement())
+                .avatar(session.getAvatar())
+                .avatarObjectName(session.getAvatarObjectName())
+                .updatedTime(dateValue(session.getUpdatedTime()))
+                .build();
+    }
+
+    private String imageExtension(String fileName) {
+        ThrowUtils.throwIf(fileName == null || fileName.isBlank(),
+                ErrorCode.PARAMS_ERROR, "图片文件名不能为空");
+        int dotIndex = fileName.lastIndexOf('.');
+        ThrowUtils.throwIf(dotIndex < 0 || dotIndex == fileName.length() - 1,
+                ErrorCode.PARAMS_ERROR, "群头像仅支持 JPG、PNG 或 WebP");
+        String extension = fileName.substring(dotIndex + 1).toLowerCase(Locale.ROOT);
+        if ("jpeg".equals(extension)) {
+            extension = "jpg";
+        }
+        ThrowUtils.throwIf(!Set.of("jpg", "png", "webp").contains(extension),
+                ErrorCode.PARAMS_ERROR, "群头像仅支持 JPG、PNG 或 WebP");
+        return extension;
+    }
+
+    private void notifyGroupProfileUpdated(
+            Long actorId,
+            Long sessionId,
+            GroupProfileResponse profile) {
+        LambdaQueryWrapper<UserSession> membersQuery = new LambdaQueryWrapper<>();
+        membersQuery.eq(UserSession::getSessionId, sessionId)
+                .eq(UserSession::getStatus, SESSION_STATUS_NORMAL)
+                .ne(UserSession::getUserId, actorId);
+        userSessionMapper.selectList(membersQuery).forEach(member ->
+                notificationService.pushGroupProfileUpdated(
+                        actorId,
+                        member.getUserId(),
+                        sessionId,
+                        profile
+                ));
     }
 }

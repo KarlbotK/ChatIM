@@ -5,6 +5,10 @@ import com.goat.common.common.ErrorCode;
 import com.goat.common.common.ResultUtils;
 import com.goat.common.exception.BusinessException;
 import com.goat.userservice.model.dto.request.InviteGroupRequest;
+import com.goat.userservice.model.dto.request.UpdateGroupAvatarRequest;
+import com.goat.userservice.model.dto.request.UpdateGroupProfileRequest;
+import com.goat.userservice.model.dto.response.GroupAvatarUploadResponse;
+import com.goat.userservice.model.dto.response.GroupProfileResponse;
 import com.goat.userservice.model.dto.response.CreateGroupResponse;
 import com.goat.userservice.model.dto.request.CreateGroupRequest;
 import com.goat.userservice.model.dto.response.InviteGroupResponse;
@@ -17,7 +21,9 @@ import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -87,6 +93,42 @@ public class GroupController {
                 sessionId,
                 cursor,
                 limit
+        ));
+    }
+
+    @PatchMapping("/{sessionId}")
+    public BaseResponse<GroupProfileResponse> updateProfile(
+            @PathVariable Long sessionId,
+            @Valid @RequestBody UpdateGroupProfileRequest profileRequest,
+            HttpServletRequest request) {
+        return ResultUtils.success(groupService.updateProfile(
+                authenticatedUserResolver.resolve(request),
+                sessionId,
+                profileRequest
+        ));
+    }
+
+    @GetMapping("/{sessionId}/avatar/upload-url")
+    public BaseResponse<GroupAvatarUploadResponse> createAvatarUpload(
+            @PathVariable Long sessionId,
+            @RequestParam String fileName,
+            HttpServletRequest request) {
+        return ResultUtils.success(groupService.createAvatarUpload(
+                authenticatedUserResolver.resolve(request),
+                sessionId,
+                fileName
+        ));
+    }
+
+    @PutMapping("/{sessionId}/avatar")
+    public BaseResponse<GroupProfileResponse> updateAvatar(
+            @PathVariable Long sessionId,
+            @Valid @RequestBody UpdateGroupAvatarRequest avatarRequest,
+            HttpServletRequest request) {
+        return ResultUtils.success(groupService.updateAvatar(
+                authenticatedUserResolver.resolve(request),
+                sessionId,
+                avatarRequest
         ));
     }
 }

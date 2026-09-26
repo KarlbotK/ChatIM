@@ -76,8 +76,11 @@ import {
   fetchAllGroupMembers,
   fetchSessionDetail,
   inviteGroupMembers,
+  updateGroupProfile,
+  uploadGroupAvatar,
   type CreateGroupResult,
   type GroupMemberResult,
+  type GroupProfileResult,
   type InviteGroupResult,
 } from "./groups";
 import {
@@ -99,6 +102,7 @@ import {
   type RealtimeConnectionState,
   type RealtimeMessage,
   type RealtimeMessageAck,
+  type RealtimeSystemNotification,
 } from "./realtime";
 import {
   fetchSessionList,
@@ -854,6 +858,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
             id: sessionId,
             name,
             avatar: group?.avatar || contact?.avatar || name.slice(0, 1),
+            avatarUrl: group?.avatarUrl || null,
             avatarTone: contact?.avatarTone || toneFromId(sessionId),
             preview,
             time: formatConversationTime(latest.createdTime),
@@ -864,7 +869,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
               ? String(latest.senderId)
               : undefined),
             group: latest.sessionType === 1,
-            membersCount: group?.members.length,
+            membersCount: group?.memberCount ?? group?.members.length,
           });
         }
       });
@@ -995,6 +1000,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
         id,
         name,
         avatar: existing?.avatar || name.slice(0, 1) || (summary.sessionType === 1 ? "群" : "友"),
+        avatarUrl: summary.avatar || existing?.avatarUrl || null,
         avatarTone: existing?.avatarTone || toneFromId(id),
         preview: lastMessage ? realtimePreview(lastMessage) : existing?.preview || "还没有消息",
         time: formatConversationTime(summary.lastMessageTime || summary.updatedTime || undefined),
@@ -1026,6 +1032,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
           name,
           avatar: existing?.avatar || name.slice(0, 1) || "群",
           avatarUrl: summary.avatar || existing?.avatarUrl || null,
+          avatarObjectName: existing?.avatarObjectName || null,
           announcement: existing?.announcement || null,
           creatorId: existing?.creatorId || "",
           currentUserRole: summary.currentUserRole ?? existing?.currentUserRole,
@@ -1036,6 +1043,47 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
     groupsRef.current = nextGroups;
     setGroups(nextGroups);
     saveGroups(session.userId, nextGroups);
+  };
+
+  const applyGroupProfile = (profile: GroupProfileResult) => {
+    const groupId = String(profile.sessionId);
+    const nextGroups = groupsRef.current.map((item) => {
+      if (item.sessionId !== groupId) return item;
+      const name = profile.name?.trim() || item.name;
+      return {
+        ...item,
+        name,
+        avatar: name.slice(0, 1) || "群",
+        avatarUrl: profile.avatar !== undefined ? profile.avatar : item.avatarUrl ?? null,
+        avatarObjectName: profile.avatarObjectName !== undefined
+          ? profile.avatarObjectName
+          : item.avatarObjectName ?? null,
+        announcement: profile.announcement !== undefined
+          ? profile.announcement
+          : item.announcement ?? null,
+      };
+    });
+    groupsRef.current = nextGroups;
+    setGroups(nextGroups);
+    setConversations((items) => items.map((item) => item.id === groupId ? {
+      ...item,
+      name: profile.name?.trim() || item.name,
+      avatar: (profile.name?.trim() || item.name).slice(0, 1) || "群",
+      avatarUrl: profile.avatar !== undefined ? profile.avatar : item.avatarUrl ?? null,
+    } : item));
+  };
+
+  const applySystemNotification = (notification: RealtimeSystemNotification) => {
+    if (notification.type !== 105 || notification.sessionId == null) return;
+    const body = notification.body;
+    applyGroupProfile({
+      sessionId: String(notification.sessionId),
+      name: typeof body.sessionName === "string" ? body.sessionName : "",
+      announcement: typeof body.announcement === "string" ? body.announcement : null,
+      avatar: typeof body.avatar === "string" ? body.avatar : null,
+      avatarObjectName: typeof body.avatarObjectName === "string" ? body.avatarObjectName : null,
+      updatedTime: typeof body.updatedTime === "number" ? body.updatedTime : notification.timestamp,
+    });
   };
 
   useEffect(() => {
@@ -1101,6 +1149,9 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
         if (!active) return;
         applyMessageAck(ack);
         if (ack.stage === "failed" && ack.errorMessage) setNotice(ack.errorMessage);
+      },
+      onNotification: (notification) => {
+        if (active) applySystemNotification(notification);
       },
       onConnected: () => {
         if (!active) return;
@@ -1317,12 +1368,13 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
       id: group.sessionId,
       name: group.name,
       avatar: group.avatar,
+      avatarUrl: group.avatarUrl,
       avatarTone: "green",
       preview: "群聊创建成功，和大家打个招呼吧",
       time: "刚刚",
       unread: 0,
       group: true,
-      membersCount: group.members.length,
+      membersCount: group.memberCount ?? group.members.length,
     };
     setConversations((items) => [nextConversation, ...items]);
     setMessages((items) => ({ ...items, [group.sessionId]: [] }));
@@ -1350,6 +1402,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
         name: detail.name?.trim() || cached?.name || "群聊",
         avatar: (detail.name?.trim() || cached?.name || "群").slice(0, 1) || "群",
         avatarUrl: detail.avatar || null,
+        avatarObjectName: detail.avatarObjectName || null,
         announcement: detail.announcement || null,
         creatorId: detail.ownerId == null ? "" : String(detail.ownerId),
         currentUserRole: detail.currentUserRole ?? undefined,
@@ -1362,6 +1415,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
         ...item,
         name: group.name,
         avatar: group.avatar,
+        avatarUrl: group.avatarUrl,
         membersCount: group.memberCount,
         muted: detail.muted,
         pinned: detail.pinned,
@@ -1397,12 +1451,13 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
       id: group.sessionId,
       name: group.name,
       avatar: group.avatar,
+      avatarUrl: group.avatarUrl,
       avatarTone: "green",
       preview: "群聊创建成功，和大家打个招呼吧",
       time: "刚刚",
       unread: 0,
       group: true,
-      membersCount: group.members.length,
+      membersCount: group.memberCount ?? group.members.length,
     }, ...items.filter((item) => item.id !== group.sessionId)]);
     setMessages((items) => ({ ...items, [group.sessionId]: [] }));
     setContactSurface({ kind: "group-result", group, failedIds: [...failedIds] });
@@ -1541,8 +1596,10 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
       return (
         <GroupSettingsScreen
           group={group}
+          session={session}
           onBack={() => setContactSurface(null)}
           onInvite={() => setContactSurface({ kind: "group-invite", groupId: group.sessionId })}
+          onProfileChanged={applyGroupProfile}
         />
       );
     }
@@ -1891,6 +1948,7 @@ type Conversation = {
   id: string;
   name: string;
   avatar: string;
+  avatarUrl?: string | null;
   avatarTone: AvatarTone;
   preview: string;
   time: string;
@@ -1922,6 +1980,7 @@ type GroupRecord = {
   name: string;
   avatar: string;
   avatarUrl?: string | null;
+  avatarObjectName?: string | null;
   announcement?: string | null;
   creatorId: string;
   currentUserRole?: number;
@@ -2099,10 +2158,20 @@ function SearchField({ value, onChange, placeholder }: { value: string; onChange
   );
 }
 
-function Avatar({ label, tone, online = false }: { label: string; tone: AvatarTone; online?: boolean }) {
+function Avatar({
+  label,
+  tone,
+  online = false,
+  imageUrl,
+}: {
+  label: string;
+  tone: AvatarTone;
+  online?: boolean;
+  imageUrl?: string | null;
+}) {
   return (
     <span className={`list-avatar ${tone}`} aria-hidden="true">
-      {label}
+      {imageUrl ? <img src={imageUrl} alt="" /> : label}
       {online ? <i /> : null}
     </span>
   );
@@ -2111,7 +2180,7 @@ function Avatar({ label, tone, online = false }: { label: string; tone: AvatarTo
 function ConversationRow({ conversation, onClick }: { conversation: Conversation; onClick: () => void }) {
   return (
     <button className="conversation-row" type="button" onClick={onClick}>
-      <Avatar label={conversation.avatar} tone={conversation.avatarTone} online={conversation.presence === "在线"} />
+      <Avatar label={conversation.avatar} imageUrl={conversation.avatarUrl} tone={conversation.avatarTone} online={conversation.presence === "在线"} />
       <span className="conversation-copy">
         <span className="conversation-title">
           <strong>{conversation.name}</strong>
@@ -2538,7 +2607,7 @@ function GroupListScreen({
             <section className="group-list" aria-label="群聊列表">
               {groups.map((group) => (
                 <button type="button" className="group-list-row" key={group.sessionId} onClick={() => onOpen(group)}>
-                  <Avatar label={group.avatar} tone="green" />
+                  <Avatar label={group.avatar} imageUrl={group.avatarUrl} tone="green" />
                   <span><strong>{group.name}</strong><small>{group.memberCount ?? group.members.length} 位成员</small></span>
                   <span className="group-avatar-stack" aria-hidden="true">
                     {group.members.slice(0, 3).map((member) => <i key={member.id}>{member.avatar}</i>)}
@@ -2745,29 +2814,153 @@ function GroupCreateResultScreen({
 
 function GroupSettingsScreen({
   group,
+  session,
   onBack,
   onInvite,
+  onProfileChanged,
 }: {
   group: GroupRecord;
+  session: AuthSession;
   onBack: () => void;
   onInvite: () => void;
+  onProfileChanged: (profile: GroupProfileResult) => void;
 }) {
   const canInvite = group.currentUserRole == null || group.currentUserRole <= 1;
+  const canEditName = group.currentUserRole === 0;
+  const canEditAnnouncement = group.currentUserRole != null && group.currentUserRole <= 1;
+  const canEditAvatar = group.currentUserRole === 0;
+  const canEditProfile = canEditName || canEditAnnouncement;
+  const avatarInputRef = useRef<HTMLInputElement>(null);
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(group.name);
+  const [announcement, setAnnouncement] = useState(group.announcement || "");
+  const [busy, setBusy] = useState(false);
+  const [avatarProgress, setAvatarProgress] = useState(0);
+  const [feedback, setFeedback] = useState("");
+
+  useEffect(() => {
+    if (editing) return;
+    setName(group.name);
+    setAnnouncement(group.announcement || "");
+  }, [editing, group.announcement, group.name]);
+
+  const saveProfile = async () => {
+    if (busy) return;
+    const normalizedName = name.trim();
+    if (canEditName && !normalizedName) {
+      setFeedback("群名称不能为空");
+      return;
+    }
+    setBusy(true);
+    setFeedback("");
+    try {
+      const result = await updateGroupProfile(session, group.sessionId, {
+        ...(canEditName ? { name: normalizedName } : {}),
+        ...(canEditAnnouncement ? { announcement } : {}),
+      });
+      onProfileChanged(result);
+      setEditing(false);
+      setFeedback("群资料已保存");
+    } catch (error) {
+      setFeedback(toGroupErrorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const changeAvatar = async (file?: File) => {
+    if (!file || busy || !canEditAvatar) return;
+    setBusy(true);
+    setFeedback("");
+    setAvatarProgress(1);
+    try {
+      const prepared = await prepareChatImage(file);
+      const result = await uploadGroupAvatar(
+        session,
+        group.sessionId,
+        prepared,
+        setAvatarProgress,
+      );
+      onProfileChanged(result);
+      setFeedback("群头像已更新");
+    } catch (error) {
+      setFeedback(error instanceof MediaApiError ? error.message : toGroupErrorMessage(error));
+    } finally {
+      setBusy(false);
+      setAvatarProgress(0);
+      if (avatarInputRef.current) avatarInputRef.current.value = "";
+    }
+  };
+
   return (
     <div className="subpage-screen">
-      <SubpageHeader title="群资料" subtitle={`${group.memberCount ?? group.members.length} 位成员`} onBack={onBack} />
+      <SubpageHeader
+        title="群资料"
+        subtitle={`${group.memberCount ?? group.members.length} 位成员`}
+        onBack={onBack}
+        action={canEditProfile ? (
+          <button type="button" disabled={busy} onClick={() => {
+            setEditing((value) => !value);
+            setFeedback("");
+          }}>{editing ? "取消" : "编辑"}</button>
+        ) : undefined}
+      />
       <MobileScroll className="subpage-scroll">
         <main className="subpage-content group-settings-content">
           <section className="group-profile-card">
-            <Avatar label={group.avatar} tone="green" />
+            <button
+              type="button"
+              className="group-avatar-editor"
+              disabled={!canEditAvatar || busy}
+              onClick={() => avatarInputRef.current?.click()}
+              aria-label={canEditAvatar ? "更换群头像" : "群头像"}
+            >
+              <Avatar label={group.avatar} imageUrl={group.avatarUrl} tone="green" />
+              {canEditAvatar ? <small>{avatarProgress > 0 ? `${avatarProgress}%` : "更换"}</small> : null}
+            </button>
+            <input
+              ref={avatarInputRef}
+              className="visually-hidden"
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              onChange={(event) => void changeAvatar(event.target.files?.[0])}
+            />
             <div><h1>{group.name}</h1><p>群号 {group.sessionId}</p></div>
           </section>
+          {feedback ? <p className="application-feedback" role="status">{feedback}</p> : null}
+          {editing ? (
+            <section className="group-profile-form" aria-label="编辑群资料">
+              {canEditName ? (
+                <label>
+                  <span>群名称</span>
+                  <KeyboardInput value={name} maxLength={40} onChange={(event) => setName(event.target.value)} />
+                  <small>{name.length}/40</small>
+                </label>
+              ) : null}
+              {canEditAnnouncement ? (
+                <label>
+                  <span>群公告</span>
+                  <KeyboardTextarea
+                    value={announcement}
+                    maxLength={500}
+                    rows={4}
+                    placeholder="向群成员说明重要事项"
+                    onChange={(event) => setAnnouncement(event.target.value)}
+                  />
+                  <small>{announcement.length}/500</small>
+                </label>
+              ) : null}
+              <button type="button" className="group-primary-action" disabled={busy} onClick={() => void saveProfile()}>
+                {busy ? "正在保存" : "保存群资料"}
+              </button>
+            </section>
+          ) : null}
           <section className="group-members-card">
             <div className="group-section-heading"><strong>群成员</strong><small>{group.memberCount ?? group.members.length} 人</small></div>
             <div className="group-member-grid">
               {group.members.slice(0, 8).map((member) => (
                 <span key={member.id}>
-                  <Avatar label={member.avatar} tone={toneFromId(member.id)} />
+                  <Avatar label={member.avatar} imageUrl={member.avatarUrl} tone={toneFromId(member.id)} />
                   <small>{member.name}</small>
                   {member.role === "owner" ? <b>群主</b> : member.role === "admin" ? <b>管理员</b> : null}
                 </span>
@@ -2883,7 +3076,7 @@ function ChatScreen({
       <header className="chat-header">
         <button type="button" className="chat-header-button" onClick={onBack} aria-label="返回消息列表"><ArrowLeftIcon /></button>
         <button type="button" className="chat-person" aria-label={`查看${conversation.name}的资料`}>
-          <Avatar label={conversation.avatar} tone={conversation.avatarTone} online={conversation.presence === "在线"} />
+          <Avatar label={conversation.avatar} imageUrl={conversation.avatarUrl} tone={conversation.avatarTone} online={conversation.presence === "在线"} />
           <span><strong>{conversation.name}</strong><small>{conversation.group ? `${conversation.membersCount || "多"} 位成员 · ${connectionLabel}` : conversation.presence || connectionLabel}</small></span>
         </button>
         <button
@@ -2902,7 +3095,7 @@ function ChatScreen({
             <div className="chat-empty"><ChatBubbleIcon /><strong>{conversation.group ? "群聊已经创建" : "你们已经是好友了"}</strong><span>发一条消息开始聊天吧</span></div>
           ) : messages.map((message) => (
             <div className={`message-line ${message.mine ? "mine" : "theirs"}`} key={message.id}>
-              {!message.mine ? <Avatar label={conversation.avatar} tone={conversation.avatarTone} /> : null}
+              {!message.mine ? <Avatar label={conversation.avatar} imageUrl={conversation.avatarUrl} tone={conversation.avatarTone} /> : null}
               <div className="message-stack">
                 {message.kind === "image" ? (
                   <button
@@ -3109,7 +3302,19 @@ function loadGroups(userId: AuthSession["userId"]): GroupRecord[] {
 }
 
 function saveGroups(userId: AuthSession["userId"], groups: GroupRecord[]) {
-  window.localStorage.setItem(`${GROUP_STORAGE_PREFIX}.${userId}`, JSON.stringify(groups));
+  const persistableGroups = groups.map((group) => ({
+    ...group,
+    avatarUrl: isTemporaryImageUrl(group.avatarUrl) ? null : group.avatarUrl,
+  }));
+  try {
+    window.localStorage.setItem(`${GROUP_STORAGE_PREFIX}.${userId}`, JSON.stringify(persistableGroups));
+  } catch {
+    // Group data remains available in memory when the browser cache is full.
+  }
+}
+
+function isTemporaryImageUrl(value?: string | null) {
+  return Boolean(value?.startsWith("blob:") || value?.startsWith("data:"));
 }
 
 function makeClientMessageId() {

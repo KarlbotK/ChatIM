@@ -4,6 +4,7 @@ package com.goat.userservice.utils;
 import cn.hutool.core.util.StrUtil;
 import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.MinioClient;
+import io.minio.StatObjectArgs;
 import io.minio.http.Method;
 import jakarta.annotation.Resource;
 import lombok.SneakyThrows;
@@ -35,5 +36,24 @@ public class OssUtils {
 
     public String downUrl(String bucketName, String fileName) {
         return url + StrUtil.SLASH + bucketName + StrUtil.SLASH + fileName;
+    }
+
+    @SneakyThrows
+    public boolean objectExists(String bucketName, String objectName) {
+        try {
+            minioClient.statObject(
+                    StatObjectArgs.builder()
+                            .bucket(bucketName)
+                            .object(objectName)
+                            .build()
+            );
+            return true;
+        } catch (io.minio.errors.ErrorResponseException exception) {
+            String code = exception.errorResponse() == null ? null : exception.errorResponse().code();
+            if ("NoSuchKey".equals(code) || "NoSuchObject".equals(code)) {
+                return false;
+            }
+            throw exception;
+        }
     }
 }

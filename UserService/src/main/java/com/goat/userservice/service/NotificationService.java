@@ -3,6 +3,7 @@ package com.goat.userservice.service;
 import com.goat.userservice.model.dto.FriendApplicationNotificationDTO;
 import com.goat.userservice.model.dto.NewGroupSessionNotificationDTO;
 import com.goat.userservice.model.dto.NewSessionNotificationDTO;
+import com.goat.userservice.model.dto.response.GroupProfileResponse;
 
 /**
  * 通知推送服务接口
@@ -48,4 +49,11 @@ public interface NotificationService {
      *
      */
     void pushGroupNewSession(Long userID, Long sessionId, NewGroupSessionNotificationDTO notification);
+
+    void pushGroupProfileUpdated(
+            Long actorId,
+            Long userId,
+            Long sessionId,
+            GroupProfileResponse profile
+    );
 }

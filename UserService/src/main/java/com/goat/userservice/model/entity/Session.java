@@ -52,6 +52,16 @@ public class Session implements Serializable {
      */
     private String avatar;
 
+    /**
+     * 群聊头像在对象存储中的稳定对象名。
+     */
+    private String avatarObjectName;
+
+    /**
+     * 群公告，仅群聊使用。
+     */
+    private String announcement;
+
     @TableField(exist = false)
     @Serial
     private static final long serialVersionUID = 1L;

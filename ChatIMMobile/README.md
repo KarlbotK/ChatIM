@@ -9,7 +9,7 @@
 - 会话搜索、聊天详情、文本发送与发送状态；
 - 联系人列表、好友搜索、好友资料和好友申请发送；
 - 新朋友申请列表、未读数、批量已读、接受/拒绝，以及通过后直接发起会话；
-- 群聊列表、好友多选建群、部分失败结果、服务端群资料、分页成员，以及群主或管理员继续邀请好友；
+- 群聊列表、好友多选建群、部分失败结果、服务端群资料、分页成员、群名称/公告/头像修改，以及群主或管理员继续邀请好友；
 - 聊天图片选择、格式与大小校验、最长边压缩、上传进度、图片气泡和全屏预览；
 - WebSocket 实时收发、心跳保活、指数退避重连和服务端回推确认；
 - 登录及重连后的会话摘要同步、服务端未读数校正、已读位置提交、离线消息补拉、按消息编号去重，以及向上加载历史消息；
@@ -60,13 +60,16 @@ $env:FRONTEND_ORIGIN="http://localhost:4173"
 - `GET /api/session/{sessionId}`
 - `POST /api/session/{sessionId}/read`
 - `GET /api/group/{sessionId}/members?cursor=&limit=`
+- `PATCH /api/group/{sessionId}`
+- `GET /api/group/{sessionId}/avatar/upload-url?fileName=`
+- `PUT /api/group/{sessionId}/avatar`
 - `GET /api/message/unread`
 
 当前浏览器版本用 `localStorage` 模拟移动端安全存储。正式客户端接入时应将访问令牌和刷新令牌迁移到系统安全存储。
 
 ## 当前接口边界
 
-后端已经公开会话摘要、会话详情、已读位置、未读数和群成员分页接口。前端在冷启动与重连后以服务端会话状态为准，在会话可见后提交最后消息 ID，并在打开群资料时同步群信息、成员角色和成员列表。消息发送会分别收到 `accepted`、`persisted` 或 `failed` ACK，前端只在 `persisted` 后显示“已发送”；ACK 超时后会查询 `/api/message/status`，无法确认时显示“结果待确认”，不会自动重复发送。
+后端已经公开会话摘要、会话详情、已读位置、未读数、群成员分页和群资料修改接口。前端在冷启动与重连后以服务端会话状态为准，在会话可见后提交最后消息 ID，并在打开群资料时同步群信息、成员角色和成员列表。群主可修改名称、公告和头像，管理员可修改公告；在线成员会通过系统事件收到最新群资料。消息发送会分别收到 `accepted`、`persisted` 或 `failed` ACK，前端只在 `persisted` 后显示“已发送”；ACK 超时后会查询 `/api/message/status`，无法确认时显示“结果待确认”，不会自动重复发送。
 
 WebSocket 建连后，客户端通过 `/api/message/offline/sync` 循环拉取 MySQL 中的完整消息，每页合并成功后保存当前账号专属的服务端游标，直到 `hasMore` 为 false。
 

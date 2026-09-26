@@ -1,4 +1,5 @@
 import { demoModeEnabled, type AuthSession } from "./auth";
+import type { PreparedChatImage } from "./media";
 
 export type CreateGroupResult = {
   creatorId: string;
@@ -27,6 +28,7 @@ export type SessionDetail = {
   name: string;
   avatar?: string | null;
   announcement?: string | null;
+  avatarObjectName?: string | null;
   peer?: SessionParticipant | null;
   ownerId?: string | null;
   memberCount?: number | null;
@@ -55,6 +57,22 @@ export type GroupMemberPage = {
   nextCursor?: string | null;
   hasMore: boolean;
   serverTime: number;
+};
+
+export type GroupProfileResult = {
+  sessionId: string;
+  name?: string;
+  announcement?: string | null;
+  avatar?: string | null;
+  avatarObjectName?: string | null;
+  updatedTime?: number;
+};
+
+type GroupAvatarUploadTarget = {
+  uploadUrl: string;
+  downloadUrl: string;
+  objectName: string;
+  expiresInSeconds: number;
 };
 
 type ApiResponse<T> = {
@@ -195,4 +213,81 @@ export async function fetchAllGroupMembers(session: AuthSession, sessionId: stri
     cursor = nextCursor;
   } while (true);
   return members;
+}
+
+export async function updateGroupProfile(
+  session: AuthSession,
+  sessionId: string,
+  changes: { name?: string; announcement?: string },
+) {
+  if (demoModeEnabled) {
+    await demoDelay(420);
+    return {
+      sessionId,
+      ...(changes.name !== undefined ? { name: changes.name.trim() } : {}),
+      ...(changes.announcement !== undefined
+        ? { announcement: changes.announcement.trim() || null }
+        : {}),
+      updatedTime: Date.now(),
+    } satisfies GroupProfileResult;
+  }
+  return request<GroupProfileResult>(session, `/api/group/${encodeURIComponent(sessionId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(changes),
+  });
+}
+
+export async function uploadGroupAvatar(
+  session: AuthSession,
+  sessionId: string,
+  prepared: PreparedChatImage,
+  onProgress: (progress: number) => void,
+) {
+  if (demoModeEnabled) {
+    for (const progress of [24, 51, 78, 100]) {
+      await demoDelay(90);
+      onProgress(progress);
+    }
+    return {
+      sessionId,
+      avatar: URL.createObjectURL(prepared.blob),
+      avatarObjectName: prepared.fileName,
+      updatedTime: Date.now(),
+    } satisfies GroupProfileResult;
+  }
+
+  const query = new URLSearchParams({ fileName: prepared.originalName || prepared.fileName });
+  const target = await request<GroupAvatarUploadTarget>(
+    session,
+    `/api/group/${encodeURIComponent(sessionId)}/avatar/upload-url?${query}`,
+    { method: "GET" },
+  );
+  await putObject(target.uploadUrl, prepared.blob, onProgress);
+  return request<GroupProfileResult>(session, `/api/group/${encodeURIComponent(sessionId)}/avatar`, {
+    method: "PUT",
+    body: JSON.stringify({ objectName: target.objectName }),
+  });
+}
+
+function putObject(uploadUrl: string, blob: Blob, onProgress: (progress: number) => void) {
+  return new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", uploadUrl, true);
+    xhr.timeout = 30_000;
+    xhr.setRequestHeader("Content-Type", blob.type || "application/octet-stream");
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(Math.max(1, Math.round((event.loaded / event.total) * 100)));
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress(100);
+        resolve();
+      } else {
+        reject(new GroupApiError("群头像上传失败，请稍后重试"));
+      }
+    };
+    xhr.onerror = () => reject(new GroupApiError("群头像上传失败，请检查网络"));
+    xhr.ontimeout = () => reject(new GroupApiError("群头像上传超时，请稍后重试"));
+    xhr.send(blob);
+  });
 }
