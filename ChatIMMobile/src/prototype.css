@@ -2817,7 +2817,8 @@
 .group-member-grid button > i svg { width: 19px; height: 19px; }
 .group-member-grid small { width: 100%; overflow: hidden; font-size: 8px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 
-.group-member-grid span > b {
+.group-member-grid span > b,
+.group-member-grid button > b {
   position: absolute;
   top: 34px;
   padding: 2px 5px;
@@ -2828,6 +2829,37 @@
   font-size: 6px;
 }
 
+.group-member-grid > button:not([aria-label="邀请好友"]) { cursor: pointer; }
+.group-member-grid > button.is-selected .list-avatar {
+  outline: 2px solid var(--chatim-green);
+  outline-offset: 2px;
+}
+
+.group-member-actions {
+  display: grid;
+  gap: 10px;
+  margin: 0 12px 13px;
+  padding: 12px;
+  border-radius: 14px;
+  background: #f4f6f1;
+}
+
+.group-member-actions > div:first-child { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.group-member-actions > div:first-child strong { font-size: 11px; }
+.group-member-actions > div:first-child small { color: #85887f; font-size: 8px; }
+.group-member-actions > div:last-child { display: flex; flex-wrap: wrap; gap: 7px; }
+.group-member-actions button {
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid #d8ded4;
+  border-radius: 10px;
+  background: #fff;
+  color: #496653;
+  font-size: 8px;
+}
+
+.group-member-actions button.danger { border-color: #efd0ca; color: #b64d3f; }
+
 .group-info-list > div { display: flex; min-height: 62px; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid #ece9e1; }
 .group-info-list > div:last-child { border-bottom: 0; }
 .group-info-list > div > span { display: grid; min-width: 0; flex: 1; gap: 4px; }
@@ -2836,6 +2868,56 @@
 .group-info-list svg { width: 14px; height: 14px; color: #a2a49c; }
 .invite-more-button { margin-top: 14px; }
 .invite-more-button svg { width: 15px; height: 15px; }
+
+.group-danger-action {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 10px;
+  border: 1px solid #efd5d0;
+  border-radius: 14px;
+  background: #fff8f6;
+  color: #b84739;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.group-danger-action:disabled { opacity: 0.55; }
+
+.group-confirm-backdrop {
+  position: absolute;
+  z-index: 30;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(28, 31, 27, 0.34);
+  inset: 0;
+}
+
+.group-confirm-dialog {
+  width: 100%;
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 20px 54px rgba(35, 42, 36, 0.24);
+}
+
+.group-confirm-dialog > strong { display: block; color: #272d29; font-size: 14px; }
+.group-confirm-dialog > p { margin: 8px 0 16px; color: #777c74; font-size: 9px; line-height: 1.6; }
+.group-confirm-dialog > div { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.group-confirm-dialog button {
+  min-height: 40px;
+  border: 1px solid #dde2d9;
+  border-radius: 12px;
+  background: #f7f8f5;
+  color: #525950;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.group-confirm-dialog button.danger { border-color: #d45b4b; background: #c95343; color: #fff; }
+.group-confirm-dialog button:disabled { opacity: 0.55; }
 
 @media (prefers-reduced-motion: reduce) {
   .button-spinner { animation-duration: 1.6s; }

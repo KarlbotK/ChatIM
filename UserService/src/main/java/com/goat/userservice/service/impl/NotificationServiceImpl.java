@@ -10,6 +10,7 @@ import com.goat.userservice.model.dto.NewGroupSessionNotificationDTO;
 import com.goat.userservice.model.dto.NewSessionNotificationDTO;
 import com.goat.userservice.model.dto.SystemNotificationMessage;
 import com.goat.userservice.model.dto.response.GroupProfileResponse;
+import com.goat.userservice.model.dto.response.GroupManagementResponse;
 import com.goat.userservice.service.NotificationService;
 
 import cn.hutool.json.JSONUtil;
@@ -208,6 +209,36 @@ public class NotificationServiceImpl implements NotificationService {
         } catch (Exception exception) {
             log.error("发送群资料更新通知失败，用户ID: {}, 会话ID: {}, 错误: {}",
                     userId, sessionId, exception.getMessage(), exception);
+        }
+    }
+
+    @Override
+    public void pushGroupManagementUpdated(Long userId, GroupManagementResponse result) {
+        try {
+            SystemNotificationMessage message = new SystemNotificationMessage();
+            message.setMessageId(generateMessageId());
+            message.setSessionId(result.getSessionId());
+            message.setSenderId(result.getActorUserId());
+            message.setReceiverId(userId);
+            message.setType(MessageTypeConstant.TYPE_SYSTEM_GROUP_MANAGEMENT_UPDATED);
+            message.setSessionType(SessionTypeConstant.GROUP_TYPE);
+            message.setTimestamp(System.currentTimeMillis());
+
+            Map<String, Object> body = new HashMap<>();
+            body.put("action", result.getAction());
+            body.put("actorUserId", result.getActorUserId());
+            body.put("affectedUserId", result.getAffectedUserId());
+            body.put("actorUserRole", result.getActorUserRole());
+            body.put("affectedUserRole", result.getAffectedUserRole());
+            body.put("memberCount", result.getMemberCount());
+            body.put("dissolved", result.isDissolved());
+            body.put("updatedTime", result.getUpdatedTime());
+            message.setBody(body);
+
+            sendNotification(message, "群成员管理通知");
+        } catch (Exception exception) {
+            log.error("发送群成员管理通知失败，用户ID: {}, 会话ID: {}, 错误: {}",
+                    userId, result.getSessionId(), exception.getMessage(), exception);
         }
     }
 }

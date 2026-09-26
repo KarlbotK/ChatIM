@@ -5,9 +5,11 @@ import com.goat.common.common.ErrorCode;
 import com.goat.common.common.ResultUtils;
 import com.goat.common.exception.BusinessException;
 import com.goat.userservice.model.dto.request.InviteGroupRequest;
+import com.goat.userservice.model.dto.request.GroupMemberTargetRequest;
 import com.goat.userservice.model.dto.request.UpdateGroupAvatarRequest;
 import com.goat.userservice.model.dto.request.UpdateGroupProfileRequest;
 import com.goat.userservice.model.dto.response.GroupAvatarUploadResponse;
+import com.goat.userservice.model.dto.response.GroupManagementResponse;
 import com.goat.userservice.model.dto.response.GroupProfileResponse;
 import com.goat.userservice.model.dto.response.CreateGroupResponse;
 import com.goat.userservice.model.dto.request.CreateGroupRequest;
@@ -19,6 +21,7 @@ import com.goat.userservice.utils.AuthenticatedUserResolver;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -129,6 +132,74 @@ public class GroupController {
                 authenticatedUserResolver.resolve(request),
                 sessionId,
                 avatarRequest
+        ));
+    }
+
+    @PostMapping("/{sessionId}/leave")
+    public BaseResponse<GroupManagementResponse> leaveGroup(
+            @PathVariable Long sessionId,
+            HttpServletRequest request) {
+        return ResultUtils.success(groupService.leaveGroup(
+                authenticatedUserResolver.resolve(request),
+                sessionId
+        ));
+    }
+
+    @DeleteMapping("/{sessionId}/members/{userId}")
+    public BaseResponse<GroupManagementResponse> removeMember(
+            @PathVariable Long sessionId,
+            @PathVariable Long userId,
+            HttpServletRequest request) {
+        return ResultUtils.success(groupService.removeMember(
+                authenticatedUserResolver.resolve(request),
+                sessionId,
+                userId
+        ));
+    }
+
+    @PostMapping("/{sessionId}/admins")
+    public BaseResponse<GroupManagementResponse> addAdministrator(
+            @PathVariable Long sessionId,
+            @Valid @RequestBody GroupMemberTargetRequest targetRequest,
+            HttpServletRequest request) {
+        return ResultUtils.success(groupService.addAdministrator(
+                authenticatedUserResolver.resolve(request),
+                sessionId,
+                targetRequest
+        ));
+    }
+
+    @DeleteMapping("/{sessionId}/admins/{userId}")
+    public BaseResponse<GroupManagementResponse> removeAdministrator(
+            @PathVariable Long sessionId,
+            @PathVariable Long userId,
+            HttpServletRequest request) {
+        return ResultUtils.success(groupService.removeAdministrator(
+                authenticatedUserResolver.resolve(request),
+                sessionId,
+                userId
+        ));
+    }
+
+    @PostMapping("/{sessionId}/transfer-owner")
+    public BaseResponse<GroupManagementResponse> transferOwner(
+            @PathVariable Long sessionId,
+            @Valid @RequestBody GroupMemberTargetRequest targetRequest,
+            HttpServletRequest request) {
+        return ResultUtils.success(groupService.transferOwner(
+                authenticatedUserResolver.resolve(request),
+                sessionId,
+                targetRequest
+        ));
+    }
+
+    @DeleteMapping("/{sessionId}")
+    public BaseResponse<GroupManagementResponse> dissolveGroup(
+            @PathVariable Long sessionId,
+            HttpServletRequest request) {
+        return ResultUtils.success(groupService.dissolveGroup(
+                authenticatedUserResolver.resolve(request),
+                sessionId
         ));
     }
 }

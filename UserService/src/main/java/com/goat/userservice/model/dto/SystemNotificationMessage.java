@@ -17,6 +17,8 @@ import java.util.Map;
  * - 101：收到好友申请通知
  * - 102：新会话创建通知
  * - 103：新群聊会话创建通知（群组邀请）
+ * - 105：群资料更新通知
+ * - 106：群成员和角色变更通知
  */
 @Data
 public class SystemNotificationMessage implements Serializable {

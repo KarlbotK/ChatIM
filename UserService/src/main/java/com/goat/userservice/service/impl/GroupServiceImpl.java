@@ -1,6 +1,7 @@
 package com.goat.userservice.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.goat.common.common.ErrorCode;
 import com.goat.common.constant.CommonConstant;
 import com.goat.common.constant.SessionTypeConstant;
@@ -12,9 +13,11 @@ import com.goat.userservice.mapper.UserMapper;
 import com.goat.userservice.mapper.UserSessionMapper;
 import com.goat.userservice.model.dto.NewGroupSessionNotificationDTO;
 import com.goat.userservice.model.dto.request.InviteGroupRequest;
+import com.goat.userservice.model.dto.request.GroupMemberTargetRequest;
 import com.goat.userservice.model.dto.request.UpdateGroupAvatarRequest;
 import com.goat.userservice.model.dto.request.UpdateGroupProfileRequest;
 import com.goat.userservice.model.dto.response.GroupAvatarUploadResponse;
+import com.goat.userservice.model.dto.response.GroupManagementResponse;
 import com.goat.userservice.model.dto.response.InviteGroupResponse;
 import com.goat.userservice.model.dto.response.GroupMemberListResponse;
 import com.goat.userservice.model.dto.response.GroupMemberResponse;
@@ -60,6 +63,7 @@ public class GroupServiceImpl implements GroupService {
     private static final int USER_ROLE_GROUP_MEMBER=2;
 
     private static final int SESSION_STATUS_NORMAL=0;
+    private static final int SESSION_STATUS_DELETED=1;
 
     private static final String DEFAULT_GROUP_AVATAR_OBJECT_NAME = "group/default-avatar.jpg";
     private final UserMapper userMapper;
@@ -231,6 +235,175 @@ public class GroupServiceImpl implements GroupService {
         return profile;
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public GroupManagementResponse leaveGroup(Long requesterId, Long sessionId) {
+        validateSession(sessionId);
+        UserSession membership = validateMembership(sessionId, requesterId);
+        ThrowUtils.throwIf(Objects.equals(membership.getRole(), USER_ROLE_GROUP_OWNER),
+                ErrorCode.OPERATION_ERROR, "群主需要先转让群主后才能退出");
+        List<Long> recipients = activeMemberIds(sessionId);
+        deactivateMembership(sessionId, requesterId);
+        GroupManagementResponse result = buildManagementResult(
+                sessionId,
+                requesterId,
+                requesterId,
+                "left",
+                null,
+                null,
+                userSessionService.getGroupMemberCount(sessionId),
+                false
+        );
+        notifyGroupManagementUpdated(recipients, result);
+        return result;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public GroupManagementResponse removeMember(Long requesterId, Long sessionId, Long memberId) {
+        validateSession(sessionId);
+        UserSession operator = validateMembership(sessionId, requesterId);
+        ThrowUtils.throwIf(Objects.equals(requesterId, memberId),
+                ErrorCode.OPERATION_ERROR, "请使用退出群聊功能");
+        UserSession target = validateTargetMembership(sessionId, memberId);
+        ThrowUtils.throwIf(Objects.equals(target.getRole(), USER_ROLE_GROUP_OWNER),
+                ErrorCode.NO_AUTH_ERROR, "不能移除群主");
+        boolean owner = Objects.equals(operator.getRole(), USER_ROLE_GROUP_OWNER);
+        boolean administratorRemovingMember = Objects.equals(operator.getRole(), USER_ROLE_GROUP_ADMIN)
+                && Objects.equals(target.getRole(), USER_ROLE_GROUP_MEMBER);
+        ThrowUtils.throwIf(!owner && !administratorRemovingMember,
+                ErrorCode.NO_AUTH_ERROR, "您没有权限移除该成员");
+
+        List<Long> recipients = activeMemberIds(sessionId);
+        deactivateMembership(sessionId, memberId);
+        GroupManagementResponse result = buildManagementResult(
+                sessionId,
+                requesterId,
+                memberId,
+                "removed",
+                operator.getRole(),
+                null,
+                userSessionService.getGroupMemberCount(sessionId),
+                false
+        );
+        notifyGroupManagementUpdated(recipients, result);
+        return result;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public GroupManagementResponse addAdministrator(
+            Long requesterId,
+            Long sessionId,
+            GroupMemberTargetRequest request) {
+        validateSession(sessionId);
+        validateOwner(sessionId, requesterId);
+        Long memberId = request.getUserId();
+        ThrowUtils.throwIf(Objects.equals(requesterId, memberId),
+                ErrorCode.OPERATION_ERROR, "群主不能设置自己为管理员");
+        UserSession target = validateTargetMembership(sessionId, memberId);
+        ThrowUtils.throwIf(!Objects.equals(target.getRole(), USER_ROLE_GROUP_MEMBER),
+                ErrorCode.OPERATION_ERROR, "该成员当前不能设置为管理员");
+        updateMembershipRole(sessionId, memberId, USER_ROLE_GROUP_ADMIN);
+        GroupManagementResponse result = buildManagementResult(
+                sessionId,
+                requesterId,
+                memberId,
+                "admin_added",
+                USER_ROLE_GROUP_OWNER,
+                USER_ROLE_GROUP_ADMIN,
+                userSessionService.getGroupMemberCount(sessionId),
+                false
+        );
+        notifyGroupManagementUpdated(activeMemberIds(sessionId), result);
+        return result;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public GroupManagementResponse removeAdministrator(Long requesterId, Long sessionId, Long memberId) {
+        validateSession(sessionId);
+        validateOwner(sessionId, requesterId);
+        UserSession target = validateTargetMembership(sessionId, memberId);
+        ThrowUtils.throwIf(!Objects.equals(target.getRole(), USER_ROLE_GROUP_ADMIN),
+                ErrorCode.OPERATION_ERROR, "该成员不是管理员");
+        updateMembershipRole(sessionId, memberId, USER_ROLE_GROUP_MEMBER);
+        GroupManagementResponse result = buildManagementResult(
+                sessionId,
+                requesterId,
+                memberId,
+                "admin_removed",
+                USER_ROLE_GROUP_OWNER,
+                USER_ROLE_GROUP_MEMBER,
+                userSessionService.getGroupMemberCount(sessionId),
+                false
+        );
+        notifyGroupManagementUpdated(activeMemberIds(sessionId), result);
+        return result;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public GroupManagementResponse transferOwner(
+            Long requesterId,
+            Long sessionId,
+            GroupMemberTargetRequest request) {
+        validateSession(sessionId);
+        validateOwner(sessionId, requesterId);
+        Long memberId = request.getUserId();
+        ThrowUtils.throwIf(Objects.equals(requesterId, memberId),
+                ErrorCode.OPERATION_ERROR, "您已经是群主");
+        UserSession target = validateTargetMembership(sessionId, memberId);
+        ThrowUtils.throwIf(Objects.equals(target.getRole(), USER_ROLE_GROUP_OWNER),
+                ErrorCode.OPERATION_ERROR, "该成员已经是群主");
+        updateMembershipRole(sessionId, memberId, USER_ROLE_GROUP_OWNER);
+        updateMembershipRole(sessionId, requesterId, USER_ROLE_GROUP_MEMBER);
+        GroupManagementResponse result = buildManagementResult(
+                sessionId,
+                requesterId,
+                memberId,
+                "owner_transferred",
+                USER_ROLE_GROUP_MEMBER,
+                USER_ROLE_GROUP_OWNER,
+                userSessionService.getGroupMemberCount(sessionId),
+                false
+        );
+        notifyGroupManagementUpdated(activeMemberIds(sessionId), result);
+        return result;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public GroupManagementResponse dissolveGroup(Long requesterId, Long sessionId) {
+        Session session = validateSession(sessionId);
+        validateOwner(sessionId, requesterId);
+        List<Long> recipients = activeMemberIds(sessionId);
+        Date updatedTime = new Date();
+        session.setStatus(SESSION_STATUS_DELETED);
+        session.setUpdatedTime(updatedTime);
+        ThrowUtils.throwIf(sessionMapper.updateById(session) != 1,
+                ErrorCode.OPERATION_ERROR, "解散群聊失败");
+        UpdateWrapper<UserSession> membershipUpdate = new UpdateWrapper<>();
+        membershipUpdate.eq("session_id", sessionId)
+                .eq("status", SESSION_STATUS_NORMAL)
+                .set("status", SESSION_STATUS_DELETED)
+                .set("updated_time", updatedTime);
+        ThrowUtils.throwIf(userSessionMapper.update(null, membershipUpdate) <= 0,
+                ErrorCode.OPERATION_ERROR, "解散群聊失败");
+        GroupManagementResponse result = buildManagementResult(
+                sessionId,
+                requesterId,
+                null,
+                "dissolved",
+                null,
+                null,
+                0,
+                true
+        );
+        notifyGroupManagementUpdated(recipients, result);
+        return result;
+    }
+
     // GroupServiceImpl.java
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -314,10 +487,21 @@ public class GroupServiceImpl implements GroupService {
         return userSession;
     }
 
-    private void validateOwner(Long sessionId, Long userId) {
+    private UserSession validateOwner(Long sessionId, Long userId) {
         UserSession membership = validateMembership(sessionId, userId);
         ThrowUtils.throwIf(!Objects.equals(membership.getRole(), USER_ROLE_GROUP_OWNER),
-                ErrorCode.NO_AUTH_ERROR, "只有群主可以修改群头像");
+                ErrorCode.NO_AUTH_ERROR, "只有群主可以执行此操作");
+        return membership;
+    }
+
+    private UserSession validateTargetMembership(Long sessionId, Long userId) {
+        LambdaQueryWrapper<UserSession> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(UserSession::getSessionId, sessionId)
+                .eq(UserSession::getUserId, userId)
+                .eq(UserSession::getStatus, SESSION_STATUS_NORMAL);
+        UserSession membership = userSessionMapper.selectOne(wrapper);
+        ThrowUtils.throwIf(membership == null, ErrorCode.NOT_FOUND_ERROR, "目标成员不在群聊中");
+        return membership;
     }
     // GroupServiceImpl.java
     private List<Long> validateAndFilterFriends(Long inviterId, List<Long> inviteeIds,
@@ -418,6 +602,27 @@ public class GroupServiceImpl implements GroupService {
     }
 
     private void insertUserSession(Long sessionId,Long userId,int role){
+        LambdaQueryWrapper<UserSession> existingQuery = new LambdaQueryWrapper<>();
+        existingQuery.eq(UserSession::getSessionId, sessionId)
+                .eq(UserSession::getUserId, userId);
+        UserSession existing = userSessionMapper.selectOne(existingQuery);
+        if (existing != null) {
+            Date now = new Date();
+            UpdateWrapper<UserSession> reactivate = new UpdateWrapper<>();
+            reactivate.eq("session_id", sessionId)
+                    .eq("user_id", userId)
+                    .set("role", role)
+                    .set("status", SESSION_STATUS_NORMAL)
+                    .set("pinned", false)
+                    .set("muted", false)
+                    .set("hidden", false)
+                    .set("last_read_message_id", null)
+                    .set("created_time", now)
+                    .set("updated_time", now);
+            ThrowUtils.throwIf(userSessionMapper.update(null, reactivate) != 1,
+                    ErrorCode.OPERATION_ERROR, "恢复群成员失败");
+            return;
+        }
         UserSession userSession=new UserSession();
         userSession.setSessionId(sessionId);
         userSession.setUserId(userId);
@@ -488,5 +693,70 @@ public class GroupServiceImpl implements GroupService {
                         sessionId,
                         profile
                 ));
+    }
+
+    private void deactivateMembership(Long sessionId, Long userId) {
+        UpdateWrapper<UserSession> update = new UpdateWrapper<>();
+        update.eq("session_id", sessionId)
+                .eq("user_id", userId)
+                .eq("status", SESSION_STATUS_NORMAL)
+                .set("status", SESSION_STATUS_DELETED)
+                .set("updated_time", new Date());
+        ThrowUtils.throwIf(userSessionMapper.update(null, update) != 1,
+                ErrorCode.OPERATION_ERROR, "群成员状态更新失败");
+    }
+
+    private void updateMembershipRole(Long sessionId, Long userId, int role) {
+        UpdateWrapper<UserSession> update = new UpdateWrapper<>();
+        update.eq("session_id", sessionId)
+                .eq("user_id", userId)
+                .eq("status", SESSION_STATUS_NORMAL)
+                .set("role", role)
+                .set("updated_time", new Date());
+        ThrowUtils.throwIf(userSessionMapper.update(null, update) != 1,
+                ErrorCode.OPERATION_ERROR, "群成员角色更新失败");
+    }
+
+    private List<Long> activeMemberIds(Long sessionId) {
+        LambdaQueryWrapper<UserSession> query = new LambdaQueryWrapper<>();
+        query.eq(UserSession::getSessionId, sessionId)
+                .eq(UserSession::getStatus, SESSION_STATUS_NORMAL);
+        List<UserSession> memberships = userSessionMapper.selectList(query);
+        if (memberships == null || memberships.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return memberships.stream()
+                .map(UserSession::getUserId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+    }
+
+    private GroupManagementResponse buildManagementResult(
+            Long sessionId,
+            Long actorUserId,
+            Long affectedUserId,
+            String action,
+            Integer actorUserRole,
+            Integer affectedUserRole,
+            int memberCount,
+            boolean dissolved) {
+        return GroupManagementResponse.builder()
+                .sessionId(sessionId)
+                .actorUserId(actorUserId)
+                .affectedUserId(affectedUserId)
+                .action(action)
+                .actorUserRole(actorUserRole)
+                .affectedUserRole(affectedUserRole)
+                .memberCount(memberCount)
+                .dissolved(dissolved)
+                .updatedTime(System.currentTimeMillis())
+                .build();
+    }
+
+    private void notifyGroupManagementUpdated(
+            List<Long> recipientIds,
+            GroupManagementResponse result) {
+        recipientIds.forEach(userId -> notificationService.pushGroupManagementUpdated(userId, result));
     }
 }

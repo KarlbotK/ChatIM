@@ -2,9 +2,11 @@ package com.goat.userservice.service;
 
 
 import com.goat.userservice.model.dto.request.InviteGroupRequest;
+import com.goat.userservice.model.dto.request.GroupMemberTargetRequest;
 import com.goat.userservice.model.dto.request.UpdateGroupAvatarRequest;
 import com.goat.userservice.model.dto.request.UpdateGroupProfileRequest;
 import com.goat.userservice.model.dto.response.GroupAvatarUploadResponse;
+import com.goat.userservice.model.dto.response.GroupManagementResponse;
 import com.goat.userservice.model.dto.response.GroupProfileResponse;
 import com.goat.userservice.model.dto.response.InviteGroupResponse;
 import com.goat.userservice.model.dto.response.GroupMemberListResponse;
@@ -19,6 +21,18 @@ public interface GroupService {
     GroupAvatarUploadResponse createAvatarUpload(Long requesterId, Long sessionId, String fileName);
 
     GroupProfileResponse updateAvatar(Long requesterId, Long sessionId, UpdateGroupAvatarRequest request);
+
+    GroupManagementResponse leaveGroup(Long requesterId, Long sessionId);
+
+    GroupManagementResponse removeMember(Long requesterId, Long sessionId, Long memberId);
+
+    GroupManagementResponse addAdministrator(Long requesterId, Long sessionId, GroupMemberTargetRequest request);
+
+    GroupManagementResponse removeAdministrator(Long requesterId, Long sessionId, Long memberId);
+
+    GroupManagementResponse transferOwner(Long requesterId, Long sessionId, GroupMemberTargetRequest request);
+
+    GroupManagementResponse dissolveGroup(Long requesterId, Long sessionId);
 
     /*
     * 邀请用户加入群聊

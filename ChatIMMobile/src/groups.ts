@@ -68,6 +68,26 @@ export type GroupProfileResult = {
   updatedTime?: number;
 };
 
+export type GroupManagementAction =
+  | "left"
+  | "removed"
+  | "admin_added"
+  | "admin_removed"
+  | "owner_transferred"
+  | "dissolved";
+
+export type GroupManagementResult = {
+  sessionId: string;
+  actorUserId?: string | null;
+  affectedUserId?: string | null;
+  action: GroupManagementAction;
+  actorUserRole?: number | null;
+  affectedUserRole?: number | null;
+  memberCount?: number;
+  dissolved: boolean;
+  updatedTime: number;
+};
+
 type GroupAvatarUploadTarget = {
   uploadUrl: string;
   downloadUrl: string;
@@ -267,6 +287,89 @@ export async function uploadGroupAvatar(
     method: "PUT",
     body: JSON.stringify({ objectName: target.objectName }),
   });
+}
+
+export async function leaveGroup(session: AuthSession, sessionId: string) {
+  if (demoModeEnabled) {
+    return demoManagement(session, sessionId, "left", String(session.userId));
+  }
+  return request<GroupManagementResult>(session, `/api/group/${encodeURIComponent(sessionId)}/leave`, {
+    method: "POST",
+  });
+}
+
+export async function removeGroupMember(session: AuthSession, sessionId: string, userId: string) {
+  if (demoModeEnabled) {
+    return demoManagement(session, sessionId, "removed", userId);
+  }
+  return request<GroupManagementResult>(
+    session,
+    `/api/group/${encodeURIComponent(sessionId)}/members/${encodeURIComponent(userId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function setGroupAdministrator(
+  session: AuthSession,
+  sessionId: string,
+  userId: string,
+  administrator: boolean,
+) {
+  if (demoModeEnabled) {
+    return demoManagement(
+      session,
+      sessionId,
+      administrator ? "admin_added" : "admin_removed",
+      userId,
+      administrator ? 1 : 2,
+    );
+  }
+  const path = `/api/group/${encodeURIComponent(sessionId)}/admins${administrator
+    ? ""
+    : `/${encodeURIComponent(userId)}`}`;
+  return request<GroupManagementResult>(session, path, administrator ? {
+    method: "POST",
+    body: JSON.stringify({ userId }),
+  } : { method: "DELETE" });
+}
+
+export async function transferGroupOwner(session: AuthSession, sessionId: string, userId: string) {
+  if (demoModeEnabled) {
+    const result = await demoManagement(session, sessionId, "owner_transferred", userId, 0);
+    return { ...result, actorUserRole: 2 } satisfies GroupManagementResult;
+  }
+  return request<GroupManagementResult>(session, `/api/group/${encodeURIComponent(sessionId)}/transfer-owner`, {
+    method: "POST",
+    body: JSON.stringify({ userId }),
+  });
+}
+
+export async function dissolveGroup(session: AuthSession, sessionId: string) {
+  if (demoModeEnabled) {
+    return demoManagement(session, sessionId, "dissolved", null, null, true);
+  }
+  return request<GroupManagementResult>(session, `/api/group/${encodeURIComponent(sessionId)}`, {
+    method: "DELETE",
+  });
+}
+
+function demoManagement(
+  session: AuthSession,
+  sessionId: string,
+  action: GroupManagementAction,
+  affectedUserId: string | null,
+  affectedUserRole: number | null = null,
+  dissolved = false,
+) {
+  return demoDelay(460).then(() => ({
+    sessionId,
+    actorUserId: String(session.userId),
+    affectedUserId,
+    action,
+    affectedUserRole,
+    dissolved,
+    updatedTime: Date.now(),
+  } satisfies GroupManagementResult));
 }
 
 function putObject(uploadUrl: string, blob: Blob, onProgress: (progress: number) => void) {

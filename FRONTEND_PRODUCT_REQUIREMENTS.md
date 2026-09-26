@@ -616,7 +616,7 @@ disconnected -> connecting -> connected -> reconnecting -> connected
 | 管理员 | 按后端规则邀请、移除普通成员、管理公告 |
 | 普通成员 | 查看群资料、邀请可选好友、退出群聊 |
 
-当前已提供群创建、邀请、资料读取，以及群名称、公告和头像修改接口；成员角色、退出、移除、转让和解散仍待补充。
+当前已提供群创建、邀请、资料读取和修改，以及成员退出、移除、管理员设置、群主转让和解散接口。群昵称和全员禁言仍待补充。
 
 ### 8.6 通讯录页
 
@@ -685,6 +685,7 @@ disconnected -> connecting -> connected -> reconnecting -> connected
 | POST `/api/group/{sessionId}/leave` | 普通成员退出群聊 | 是否成功 |
 | DELETE `/api/group/{sessionId}/members/{userId}` | 群主或管理员移除成员 | 是否成功 |
 | PATCH `/api/group/{sessionId}` | 修改群名称、公告 | 群详情 |
+| DELETE `/api/group/{sessionId}` | 群主解散群聊 | 群状态和成员数 |
 | WebSocket `message-ack` | RealTimeService 主动返回发送结果 | messageId、clientMessageId、accepted/persisted/failed；失败错误码 |
 | GET `/api/message/status?clientMessageId=` | 查询待确认消息结果 | accepted、persisted、failed 或 notFound |
 | GET `/api/message/unread` | 获取各会话未读数 | Map<sessionId, count> |
@@ -960,7 +961,7 @@ status: 0 | 1
 2. HTTP 保留 Access-Token / Refresh-Token 兼容，WebSocket 移动端使用 Bearer Header，浏览器使用一次性短期 ticket；
 3. HTTP 操作者身份取自 JWT、WebSocket 发送者取自已鉴权 Channel，并校验会话权限；
 4. 会话摘要、详情、已读位置、服务端未读数和同步保障已完成；
-5. V0.2 已完成群成员分页、群名称/公告修改和群头像上传，下一步补角色管理、成员退出/移除、群主转让和解散接口；
+5. V0.2 已完成群成员分页、资料修改、角色管理、成员退出/移除、群主转让和解散接口，下一步补会话设置和群昵称；
 6. 普通消息持久化幂等、WebSocket 发送确认、超时结果查询和已读接口已完成；
 7. 确认图片对象的公开访问策略，生产环境不要把 localhost 地址写入数据库；
 8. 按当前方案使用 RealTimeService 消费后查询 Redis 路由并转发；前端只依赖稳定的 `nettyUri` 和重连/离线补拉协议，暂不增加 PushRouter；

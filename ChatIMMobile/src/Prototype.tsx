@@ -73,12 +73,19 @@ import {
 import {
   GroupApiError,
   createGroup,
+  dissolveGroup,
   fetchAllGroupMembers,
   fetchSessionDetail,
   inviteGroupMembers,
+  leaveGroup,
+  removeGroupMember,
+  setGroupAdministrator,
+  transferGroupOwner,
   updateGroupProfile,
   uploadGroupAvatar,
   type CreateGroupResult,
+  type GroupManagementAction,
+  type GroupManagementResult,
   type GroupMemberResult,
   type GroupProfileResult,
   type InviteGroupResult,
@@ -1073,17 +1080,112 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
     } : item));
   };
 
-  const applySystemNotification = (notification: RealtimeSystemNotification) => {
-    if (notification.type !== 105 || notification.sessionId == null) return;
-    const body = notification.body;
-    applyGroupProfile({
-      sessionId: String(notification.sessionId),
-      name: typeof body.sessionName === "string" ? body.sessionName : "",
-      announcement: typeof body.announcement === "string" ? body.announcement : null,
-      avatar: typeof body.avatar === "string" ? body.avatar : null,
-      avatarObjectName: typeof body.avatarObjectName === "string" ? body.avatarObjectName : null,
-      updatedTime: typeof body.updatedTime === "number" ? body.updatedTime : notification.timestamp,
+  const removeGroupLocally = (groupId: string) => {
+    const nextGroups = groupsRef.current.filter((item) => item.sessionId !== groupId);
+    groupsRef.current = nextGroups;
+    setGroups(nextGroups);
+    setConversations((items) => items.filter((item) => item.id !== groupId));
+    setMessages((items) => Object.fromEntries(
+      Object.entries(items).filter(([sessionId]) => sessionId !== groupId),
+    ));
+    setDrafts((items) => Object.fromEntries(
+      Object.entries(items).filter(([sessionId]) => sessionId !== groupId),
+    ));
+    setActiveConversationId((current) => current === groupId ? null : current);
+    setContactSurface((current) => {
+      if (!current || !("groupId" in current)) return current;
+      return current.groupId === groupId ? null : current;
     });
+  };
+
+  const applyGroupManagement = (result: GroupManagementResult) => {
+    const groupId = String(result.sessionId);
+    const currentUserId = String(session.userId);
+    const actorUserId = result.actorUserId == null ? null : String(result.actorUserId);
+    const affectedUserId = result.affectedUserId == null ? null : String(result.affectedUserId);
+    const removedCurrentUser = (result.action === "left" || result.action === "removed")
+      && affectedUserId === currentUserId;
+    if (result.dissolved || result.action === "dissolved" || removedCurrentUser) {
+      removeGroupLocally(groupId);
+      setNotice(result.action === "dissolved" ? "群聊已解散" : "你已离开群聊");
+      return;
+    }
+
+    let resolvedMemberCount: number | undefined;
+    const nextGroups = groupsRef.current.map((group) => {
+      if (group.sessionId !== groupId) return group;
+      let members = group.members;
+      if ((result.action === "left" || result.action === "removed") && affectedUserId) {
+        members = members.filter((member) => member.id !== affectedUserId);
+      }
+      if ((result.action === "admin_added" || result.action === "admin_removed") && affectedUserId) {
+        const role = result.action === "admin_added" ? "admin" : "member";
+        members = members.map((member) => member.id === affectedUserId ? { ...member, role } : member);
+      }
+      if (result.action === "owner_transferred" && affectedUserId) {
+        members = members.map((member) => {
+          if (member.id === affectedUserId) return { ...member, role: "owner" as const };
+          if (actorUserId && member.id === actorUserId) return { ...member, role: "member" as const };
+          return member;
+        });
+      }
+      const memberCount = typeof result.memberCount === "number"
+        ? result.memberCount
+        : members.length;
+      resolvedMemberCount = memberCount;
+      let currentUserRole = group.currentUserRole;
+      if (affectedUserId === currentUserId && result.affectedUserRole != null) {
+        currentUserRole = result.affectedUserRole;
+      }
+      if (actorUserId === currentUserId && result.actorUserRole != null) {
+        currentUserRole = result.actorUserRole;
+      }
+      return {
+        ...group,
+        creatorId: result.action === "owner_transferred" && affectedUserId
+          ? affectedUserId
+          : group.creatorId,
+        currentUserRole,
+        memberCount,
+        members,
+      };
+    });
+    groupsRef.current = nextGroups;
+    setGroups(nextGroups);
+    if (resolvedMemberCount != null) {
+      setConversations((items) => items.map((item) => item.id === groupId
+        ? { ...item, membersCount: resolvedMemberCount }
+        : item));
+    }
+  };
+
+  const applySystemNotification = (notification: RealtimeSystemNotification) => {
+    if (notification.sessionId == null) return;
+    const body = notification.body;
+    if (notification.type === 105) {
+      applyGroupProfile({
+        sessionId: String(notification.sessionId),
+        name: typeof body.sessionName === "string" ? body.sessionName : "",
+        announcement: typeof body.announcement === "string" ? body.announcement : null,
+        avatar: typeof body.avatar === "string" ? body.avatar : null,
+        avatarObjectName: typeof body.avatarObjectName === "string" ? body.avatarObjectName : null,
+        updatedTime: typeof body.updatedTime === "number" ? body.updatedTime : notification.timestamp,
+      });
+      return;
+    }
+    if (notification.type === 106 && typeof body.action === "string") {
+      applyGroupManagement({
+        sessionId: String(notification.sessionId),
+        actorUserId: body.actorUserId == null ? null : String(body.actorUserId),
+        affectedUserId: body.affectedUserId == null ? null : String(body.affectedUserId),
+        action: body.action as GroupManagementAction,
+        actorUserRole: typeof body.actorUserRole === "number" ? body.actorUserRole : null,
+        affectedUserRole: typeof body.affectedUserRole === "number" ? body.affectedUserRole : null,
+        memberCount: typeof body.memberCount === "number" ? body.memberCount : undefined,
+        dissolved: body.dissolved === true,
+        updatedTime: typeof body.updatedTime === "number" ? body.updatedTime : notification.timestamp,
+      });
+    }
   };
 
   useEffect(() => {
@@ -1600,6 +1702,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
           onBack={() => setContactSurface(null)}
           onInvite={() => setContactSurface({ kind: "group-invite", groupId: group.sessionId })}
           onProfileChanged={applyGroupProfile}
+          onManagementChanged={applyGroupManagement}
         />
       );
     }
@@ -2818,12 +2921,14 @@ function GroupSettingsScreen({
   onBack,
   onInvite,
   onProfileChanged,
+  onManagementChanged,
 }: {
   group: GroupRecord;
   session: AuthSession;
   onBack: () => void;
   onInvite: () => void;
   onProfileChanged: (profile: GroupProfileResult) => void;
+  onManagementChanged: (result: GroupManagementResult) => void;
 }) {
   const canInvite = group.currentUserRole == null || group.currentUserRole <= 1;
   const canEditName = group.currentUserRole === 0;
@@ -2837,6 +2942,13 @@ function GroupSettingsScreen({
   const [busy, setBusy] = useState(false);
   const [avatarProgress, setAvatarProgress] = useState(0);
   const [feedback, setFeedback] = useState("");
+  const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<{
+    kind: "remove" | "promote" | "demote" | "transfer" | "leave" | "dissolve";
+    member?: GroupMember;
+  } | null>(null);
+  const currentUserId = String(session.userId);
+  const selectedMember = group.members.find((member) => member.id === selectedMemberId) || null;
 
   useEffect(() => {
     if (editing) return;
@@ -2891,6 +3003,55 @@ function GroupSettingsScreen({
       if (avatarInputRef.current) avatarInputRef.current.value = "";
     }
   };
+
+  const canManageMember = (member: GroupMember) => {
+    if (member.id === currentUserId || member.role === "owner") return false;
+    if (group.currentUserRole === 0) return true;
+    return group.currentUserRole === 1 && member.role === "member";
+  };
+
+  const runManagementAction = async () => {
+    if (!pendingAction || busy) return;
+    setBusy(true);
+    setFeedback("");
+    try {
+      let result: GroupManagementResult;
+      switch (pendingAction.kind) {
+        case "remove":
+          result = await removeGroupMember(session, group.sessionId, pendingAction.member!.id);
+          break;
+        case "promote":
+          result = await setGroupAdministrator(session, group.sessionId, pendingAction.member!.id, true);
+          break;
+        case "demote":
+          result = await setGroupAdministrator(session, group.sessionId, pendingAction.member!.id, false);
+          break;
+        case "transfer":
+          result = await transferGroupOwner(session, group.sessionId, pendingAction.member!.id);
+          break;
+        case "leave":
+          result = await leaveGroup(session, group.sessionId);
+          break;
+        case "dissolve":
+          result = await dissolveGroup(session, group.sessionId);
+          break;
+      }
+      onManagementChanged(result);
+      setSelectedMemberId(null);
+      setPendingAction(null);
+      if (result.action === "admin_added") setFeedback("已设置管理员");
+      if (result.action === "admin_removed") setFeedback("已取消管理员");
+      if (result.action === "owner_transferred") setFeedback("群主已转让");
+      if (result.action === "removed") setFeedback("成员已移除");
+    } catch (error) {
+      setFeedback(toGroupErrorMessage(error));
+      setPendingAction(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmation = pendingAction ? groupManagementConfirmation(pendingAction.kind, pendingAction.member) : null;
 
   return (
     <div className="subpage-screen">
@@ -2958,19 +3119,50 @@ function GroupSettingsScreen({
           <section className="group-members-card">
             <div className="group-section-heading"><strong>群成员</strong><small>{group.memberCount ?? group.members.length} 人</small></div>
             <div className="group-member-grid">
-              {group.members.slice(0, 8).map((member) => (
-                <span key={member.id}>
-                  <Avatar label={member.avatar} imageUrl={member.avatarUrl} tone={toneFromId(member.id)} />
-                  <small>{member.name}</small>
-                  {member.role === "owner" ? <b>群主</b> : member.role === "admin" ? <b>管理员</b> : null}
-                </span>
-              ))}
+              {group.members.slice(0, 8).map((member) => {
+                const content = (
+                  <>
+                    <Avatar label={member.avatar} imageUrl={member.avatarUrl} tone={toneFromId(member.id)} />
+                    <small>{member.name}</small>
+                    {member.role === "owner" ? <b>群主</b> : member.role === "admin" ? <b>管理员</b> : null}
+                  </>
+                );
+                return canManageMember(member) ? (
+                  <button
+                    type="button"
+                    className={selectedMemberId === member.id ? "is-selected" : ""}
+                    key={member.id}
+                    onClick={() => setSelectedMemberId((value) => value === member.id ? null : member.id)}
+                    aria-label={`管理成员 ${member.name}`}
+                  >{content}</button>
+                ) : <span key={member.id}>{content}</span>;
+              })}
               {canInvite ? (
                 <button type="button" onClick={onInvite} aria-label="邀请好友">
                   <i><PlusIcon /></i><small>邀请</small>
                 </button>
               ) : null}
             </div>
+            {selectedMember ? (
+              <div className="group-member-actions" aria-label={`管理 ${selectedMember.name}`}>
+                <div>
+                  <strong>{selectedMember.name}</strong>
+                  <small>{selectedMember.role === "admin" ? "管理员" : "普通成员"}</small>
+                </div>
+                <div>
+                  {group.currentUserRole === 0 && selectedMember.role === "member" ? (
+                    <button type="button" onClick={() => setPendingAction({ kind: "promote", member: selectedMember })}>设为管理员</button>
+                  ) : null}
+                  {group.currentUserRole === 0 && selectedMember.role === "admin" ? (
+                    <button type="button" onClick={() => setPendingAction({ kind: "demote", member: selectedMember })}>取消管理员</button>
+                  ) : null}
+                  {group.currentUserRole === 0 ? (
+                    <button type="button" onClick={() => setPendingAction({ kind: "transfer", member: selectedMember })}>转让群主</button>
+                  ) : null}
+                  <button type="button" className="danger" onClick={() => setPendingAction({ kind: "remove", member: selectedMember })}>移出群聊</button>
+                </div>
+              </div>
+            ) : null}
           </section>
           <section className="group-info-list">
             <div><span><strong>群公告</strong><small>{group.announcement || "暂未设置群公告"}</small></span><ChevronRightIcon /></div>
@@ -2980,10 +3172,50 @@ function GroupSettingsScreen({
           {canInvite ? (
             <button type="button" className="group-primary-action invite-more-button" onClick={onInvite}><PlusIcon />邀请更多好友</button>
           ) : null}
+          <button
+            type="button"
+            className="group-danger-action"
+            disabled={busy}
+            onClick={() => setPendingAction({ kind: group.currentUserRole === 0 ? "dissolve" : "leave" })}
+          >{group.currentUserRole === 0 ? "解散群聊" : "退出群聊"}</button>
         </main>
       </MobileScroll>
+      {confirmation ? (
+        <div className="group-confirm-backdrop">
+          <section className="group-confirm-dialog" role="dialog" aria-modal="true" aria-label={confirmation.title}>
+            <strong>{confirmation.title}</strong>
+            <p>{confirmation.description}</p>
+            <div>
+              <button type="button" disabled={busy} onClick={() => setPendingAction(null)}>取消</button>
+              <button type="button" className="danger" disabled={busy} onClick={() => void runManagementAction()}>
+                {busy ? "正在处理" : confirmation.confirmLabel}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </div>
   );
+}
+
+function groupManagementConfirmation(
+  kind: "remove" | "promote" | "demote" | "transfer" | "leave" | "dissolve",
+  member?: GroupMember,
+) {
+  switch (kind) {
+    case "remove":
+      return { title: `移除 ${member?.name || "该成员"}？`, description: "移除后，对方将不能继续查看或发送群消息。", confirmLabel: "确认移除" };
+    case "promote":
+      return { title: `设 ${member?.name || "该成员"} 为管理员？`, description: "管理员可以维护群公告并移除普通成员。", confirmLabel: "确认设置" };
+    case "demote":
+      return { title: `取消 ${member?.name || "该成员"} 的管理员？`, description: "取消后，对方将恢复为普通群成员。", confirmLabel: "确认取消" };
+    case "transfer":
+      return { title: `将群主转让给 ${member?.name || "该成员"}？`, description: "转让后你会变为普通成员，此操作需要谨慎确认。", confirmLabel: "确认转让" };
+    case "leave":
+      return { title: "退出群聊？", description: "退出后会话将从列表移除，需要再次被邀请才能加入。", confirmLabel: "确认退出" };
+    case "dissolve":
+      return { title: "解散群聊？", description: "所有成员都会离开，群聊将立即停止使用。", confirmLabel: "确认解散" };
+  }
 }
 
 function ChatScreen({

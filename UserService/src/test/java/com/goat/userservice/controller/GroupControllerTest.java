@@ -4,6 +4,7 @@ import com.goat.userservice.model.dto.request.CreateGroupRequest;
 import com.goat.userservice.model.dto.request.InviteGroupRequest;
 import com.goat.userservice.model.dto.response.CreateGroupResponse;
 import com.goat.userservice.model.dto.response.InviteGroupResponse;
+import com.goat.userservice.model.dto.response.GroupManagementResponse;
 import com.goat.userservice.service.GroupService;
 import com.goat.userservice.service.SessionService;
 import com.goat.userservice.utils.AuthenticatedUserResolver;
@@ -52,5 +53,16 @@ class GroupControllerTest {
 
         assertEquals(101L, request.getInviterId());
         verify(groupService).inviteGroup(request);
+    }
+
+    @Test
+    void leaveGroupUsesAuthenticatedUser() {
+        GroupManagementResponse response = GroupManagementResponse.builder().action("left").build();
+        when(userResolver.resolve(httpRequest)).thenReturn(101L);
+        when(groupService.leaveGroup(101L, 9001L)).thenReturn(response);
+
+        controller.leaveGroup(9001L, httpRequest);
+
+        verify(groupService).leaveGroup(101L, 9001L);
     }
 }
