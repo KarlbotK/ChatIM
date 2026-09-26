@@ -44,6 +44,20 @@ public class Message {
      */
     private String content;
 
+    private String mediaObjectName;
+
+    private String mediaContentType;
+
+    private Integer mediaWidth;
+
+    private Integer mediaHeight;
+
+    private Long mediaSize;
+
+    private String thumbnailObjectName;
+
+    private String mediaOriginalName;
+
     /**
      * 消息引用 id
      */

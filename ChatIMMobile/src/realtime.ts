@@ -10,6 +10,13 @@ export type RealtimeConnectionState =
 export type RealtimeMessageBody = {
   content: string;
   replyId?: string | number | null;
+  objectName?: string | null;
+  mediaContentType?: string | null;
+  mediaWidth?: number | null;
+  mediaHeight?: number | null;
+  mediaSize?: number | null;
+  thumbnailObjectName?: string | null;
+  originalName?: string | null;
   redPacketId?: string | null;
   redPacketWrapperText?: string | null;
 };

@@ -29,6 +29,8 @@ logs/
 *.pid
 hs_err_pid*
 replay_pid*
+.playwright-cli/
+output/playwright/
 
 # IntelliJ IDEA
 .idea/

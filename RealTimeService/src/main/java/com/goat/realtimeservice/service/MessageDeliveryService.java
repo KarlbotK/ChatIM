@@ -27,6 +27,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.Date;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 @Slf4j
@@ -35,6 +36,12 @@ import java.util.concurrent.TimeUnit;
 public class MessageDeliveryService {
 
     private static final int MAX_CLIENT_MESSAGE_ID_LENGTH = 128;
+    private static final long MAX_IMAGE_SIZE = 20L * 1024 * 1024;
+    private static final Set<String> IMAGE_CONTENT_TYPES = Set.of(
+            "image/jpeg",
+            "image/png",
+            "image/webp"
+    );
 
     private final StringRedisTemplate stringRedisTemplate;
 
@@ -133,6 +140,11 @@ public class MessageDeliveryService {
             return new DeliveryFailure(ErrorCode.PARAMS_ERROR.getCode(), "消息参数不完整");
         }
 
+        DeliveryFailure mediaFailure = validateMedia(request);
+        if (mediaFailure != null) {
+            return mediaFailure;
+        }
+
         try {
             BaseResponse<Integer> sessionTypeResponse = userServiceClient.getSessionType(request.getSessionId());
             if (sessionTypeResponse == null
@@ -202,6 +214,48 @@ public class MessageDeliveryService {
                     request.getSessionId(), request.getSenderId(), exception);
             return unavailable();
         }
+    }
+
+    DeliveryFailure validateMedia(MessageRequest request) {
+        if (request.getType() != MessageTypeConstant.IMAGE_MESSAGE
+                || request.getBody().getObjectName() == null
+                || request.getBody().getObjectName().isBlank()) {
+            return null;
+        }
+        String objectName = request.getBody().getObjectName().trim();
+        String expectedPrefix = "chat/" + request.getSessionId() + "/" + request.getSenderId() + "/";
+        if (objectName.length() > 512
+                || !objectName.startsWith(expectedPrefix)
+                || objectName.contains("..")
+                || objectName.contains("\\")) {
+            return invalidMedia("图片对象标识无效");
+        }
+        String contentType = request.getBody().getMediaContentType();
+        Integer width = request.getBody().getMediaWidth();
+        Integer height = request.getBody().getMediaHeight();
+        Long size = request.getBody().getMediaSize();
+        if (!IMAGE_CONTENT_TYPES.contains(contentType)
+                || width == null || width <= 0 || width > 10000
+                || height == null || height <= 0 || height > 10000
+                || size == null || size <= 0 || size > MAX_IMAGE_SIZE
+                || (request.getBody().getOriginalName() != null
+                    && request.getBody().getOriginalName().length() > 255)) {
+            return invalidMedia("图片元数据无效");
+        }
+        String thumbnail = request.getBody().getThumbnailObjectName();
+        if (thumbnail != null && !thumbnail.isBlank()
+                && (!thumbnail.startsWith(expectedPrefix)
+                    || thumbnail.length() > 512
+                    || thumbnail.contains("..")
+                    || thumbnail.contains("\\"))) {
+            return invalidMedia("图片缩略图标识无效");
+        }
+        request.getBody().setObjectName(objectName);
+        return null;
+    }
+
+    private DeliveryFailure invalidMedia(String message) {
+        return new DeliveryFailure(ErrorCode.PARAMS_ERROR.getCode(), message);
     }
 
     private DeliveryFailure unavailable() {
@@ -303,6 +357,6 @@ public class MessageDeliveryService {
         }
     }
 
-    private record DeliveryFailure(int code, String message) {
+    record DeliveryFailure(int code, String message) {
     }
 }

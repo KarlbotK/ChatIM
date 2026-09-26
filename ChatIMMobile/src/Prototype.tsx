@@ -93,6 +93,7 @@ import {
 import {
   MediaApiError,
   prepareChatImage,
+  resolveChatImageUrl,
   uploadChatImage,
 } from "./media";
 import {
@@ -823,10 +824,15 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
         existing[matchIndex] = {
           ...local,
           ...converted,
+          content: converted.kind === "image" && isDirectImageSource(local.content)
+            ? local.content
+            : converted.content,
           imageName: local.imageName || converted.imageName,
-          imageWidth: local.imageWidth,
-          imageHeight: local.imageHeight,
-          imageSize: local.imageSize,
+          imageWidth: local.imageWidth || converted.imageWidth,
+          imageHeight: local.imageHeight || converted.imageHeight,
+          imageSize: local.imageSize || converted.imageSize,
+          mediaObjectName: converted.mediaObjectName || local.mediaObjectName,
+          mediaContentType: converted.mediaContentType || local.mediaContentType,
           uploadProgress: undefined,
           status: confirmed ? "sent" : local.status,
         };
@@ -1457,6 +1463,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
     type: 0 | 1,
     content: string,
     clientMessageId: string,
+    bodyDetails: Partial<OutgoingRealtimeMessage["body"]> = {},
   ) => {
     const peerId = conversation.peerId
       || contacts.find((contact) => contact.conversationId === conversation.id)?.id;
@@ -1474,6 +1481,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
         replyId: null,
         redPacketId: null,
         redPacketWrapperText: null,
+        ...bodyDetails,
       },
     };
     const accepted = realtimeRef.current?.send(payload) ?? false;
@@ -1836,6 +1844,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
     return (
       <ChatScreen
         conversation={activeConversation}
+        session={session}
         onOpenDetails={() => {
           if (activeConversation.group) {
             void openGroupDetails(activeConversation.id);
@@ -1906,7 +1915,7 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
                 : item)),
             ]);
 
-            const uploaded = await uploadChatImage(session, prepared, (progress) => {
+            const uploaded = await uploadChatImage(session, activeConversation.id, prepared, (progress) => {
               setMessages((items) => ({
                 ...items,
                 [activeConversation.id]: (items[activeConversation.id] ?? []).map((item) =>
@@ -1918,11 +1927,24 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
               ...items,
               [activeConversation.id]: (items[activeConversation.id] ?? []).map((item) =>
                 item.id === clientMessageId
-                  ? { ...item, content: uploaded.downloadUrl, uploadProgress: 100, status: "sending" }
+                  ? {
+                    ...item,
+                    mediaObjectName: uploaded.objectName,
+                    mediaContentType: uploaded.mediaContentType,
+                    uploadProgress: 100,
+                    status: "sending",
+                  }
                   : item,
               ),
             }));
-            sendRealtimeMessage(activeConversation, 1, uploaded.downloadUrl, clientMessageId);
+            sendRealtimeMessage(activeConversation, 1, "[图片]", clientMessageId, {
+              objectName: uploaded.objectName,
+              mediaContentType: uploaded.mediaContentType,
+              mediaWidth: uploaded.width,
+              mediaHeight: uploaded.height,
+              mediaSize: uploaded.size,
+              originalName: uploaded.originalName,
+            });
           } catch (error) {
             if (queued) {
               setMessages((items) => ({
@@ -2261,6 +2283,8 @@ type ChatMessage = {
   imageWidth?: number;
   imageHeight?: number;
   imageSize?: number;
+  mediaObjectName?: string;
+  mediaContentType?: string;
   uploadProgress?: number;
 };
 
@@ -3419,6 +3443,7 @@ function groupManagementConfirmation(
 
 function ChatScreen({
   conversation,
+  session,
   messages,
   draft,
   onDraftChange,
@@ -3430,6 +3455,7 @@ function ChatScreen({
   connectionLabel,
 }: {
   conversation: Conversation;
+  session: AuthSession;
   messages: ChatMessage[];
   draft: string;
   onDraftChange: (value: string) => void;
@@ -3529,21 +3555,15 @@ function ChatScreen({
               {!message.mine ? <Avatar label={conversation.avatar} imageUrl={conversation.avatarUrl} tone={conversation.avatarTone} /> : null}
               <div className="message-stack">
                 {message.kind === "image" ? (
-                  <button
-                    type="button"
-                    className={`image-message-bubble ${message.status === "failed" ? "failed" : ""}`}
-                    onClick={() => {
+                  <ChatMessageImage
+                    session={session}
+                    sessionId={conversation.id}
+                    message={message}
+                    onPreview={(source) => {
                       keyboard.hide();
-                      setPreviewImage(message);
+                      setPreviewImage({ ...message, content: source });
                     }}
-                    aria-label={`查看图片${message.imageName ? `：${message.imageName}` : ""}`}
-                  >
-                    <img src={message.content} alt={message.imageName || "聊天图片"} draggable="false" />
-                    {message.status === "uploading" ? (
-                      <span className="image-upload-overlay"><i /><b>{message.uploadProgress || 0}%</b></span>
-                    ) : null}
-                    {message.status === "failed" ? <span className="image-failed-overlay">上传失败<br />请重新选择</span> : null}
-                  </button>
+                  />
                 ) : (
                   <div className="message-bubble">{message.content}</div>
                 )}
@@ -3570,7 +3590,7 @@ function ChatScreen({
           <img src={previewImage.content} alt={previewImage.imageName || "聊天图片预览"} draggable="false" />
           <div className="image-preview-meta">
             <strong>{previewImage.imageName || "聊天图片"}</strong>
-            <small>{formatImageMeta(previewImage)}</small>
+            <small>{formatImageMeta(previewImage)} · 长按图片可保存</small>
           </div>
         </div>
       ) : null}
@@ -3781,7 +3801,8 @@ function isRealtimeMessage(message: RealtimeMessage) {
     && message.sessionId != null
     && message.senderId != null
     && typeof message.type === "number"
-    && typeof message.body?.content === "string";
+    && (typeof message.body?.content === "string"
+      || (message.type === 1 && typeof message.body?.objectName === "string"));
 }
 
 function toChatMessage(message: RealtimeMessage, userId: AuthSession["userId"]): ChatMessage {
@@ -3792,13 +3813,110 @@ function toChatMessage(message: RealtimeMessage, userId: AuthSession["userId"]):
     messageId: message.messageId == null ? undefined : String(message.messageId),
     clientMessageId,
     mine: String(message.senderId) === String(userId),
-    content: message.body.content,
+    content: message.body.content || "[图片]",
     time: formatClock(new Date(createdTime)),
     createdTime,
     status: String(message.senderId) === String(userId) ? "sent" : undefined,
     kind: message.type === 1 ? "image" : "text",
-    imageName: message.type === 1 ? imageNameFromUrl(message.body.content) : undefined,
+    imageName: message.type === 1
+      ? message.body.originalName || imageNameFromUrl(message.body.objectName || message.body.content)
+      : undefined,
+    imageWidth: message.body.mediaWidth || undefined,
+    imageHeight: message.body.mediaHeight || undefined,
+    imageSize: message.body.mediaSize || undefined,
+    mediaObjectName: message.body.objectName || undefined,
+    mediaContentType: message.body.mediaContentType || undefined,
   };
+}
+
+function ChatMessageImage({
+  session,
+  sessionId,
+  message,
+  onPreview,
+}: {
+  session: AuthSession;
+  sessionId: string;
+  message: ChatMessage;
+  onPreview: (source: string) => void;
+}) {
+  const initialSource = isDirectImageSource(message.content) ? message.content : "";
+  const [source, setSource] = useState(initialSource);
+  const [loadState, setLoadState] = useState<"idle" | "loading" | "ready" | "failed">(
+    initialSource ? "ready" : "idle",
+  );
+  const automaticRefreshes = useRef(0);
+
+  const loadRemote = async () => {
+    if (!message.mediaObjectName) {
+      setLoadState("failed");
+      return;
+    }
+    setLoadState("loading");
+    try {
+      const target = await resolveChatImageUrl(session, sessionId, message.mediaObjectName);
+      setSource(target.downloadUrl);
+      setLoadState("ready");
+    } catch {
+      setLoadState("failed");
+    }
+  };
+
+  useEffect(() => {
+    if (!initialSource && message.mediaObjectName) void loadRemote();
+    // A message's stable object identifier does not change after it is sent.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [message.mediaObjectName, sessionId]);
+
+  const handleImageError = () => {
+    if (message.mediaObjectName && automaticRefreshes.current < 1) {
+      automaticRefreshes.current += 1;
+      void loadRemote();
+      return;
+    }
+    setLoadState("failed");
+  };
+
+  const failed = message.status === "failed" || loadState === "failed";
+  return (
+    <button
+      type="button"
+      className={`image-message-bubble ${failed ? "failed" : ""}`}
+      onClick={() => {
+        if (loadState === "ready" && source) onPreview(source);
+        else if (message.status !== "uploading") void loadRemote();
+      }}
+      aria-label={failed
+        ? "图片加载失败，点击重试"
+        : `查看图片${message.imageName ? `：${message.imageName}` : ""}`}
+    >
+      {source ? (
+        <img
+          src={source}
+          alt={message.imageName || "聊天图片"}
+          draggable="false"
+          onLoad={() => setLoadState("ready")}
+          onError={handleImageError}
+        />
+      ) : <span className="image-placeholder" aria-hidden="true"><ImageIcon /></span>}
+      {message.status === "uploading" ? (
+        <span className="image-upload-overlay"><i /><b>{message.uploadProgress || 0}%</b></span>
+      ) : null}
+      {message.status === "failed" ? (
+        <span className="image-failed-overlay">上传失败<br />请重新选择</span>
+      ) : null}
+      {message.status !== "failed" && loadState === "loading" ? (
+        <span className="image-loading-overlay"><i /><b>正在加载图片</b></span>
+      ) : null}
+      {message.status !== "failed" && loadState === "failed" ? (
+        <span className="image-failed-overlay">图片加载失败<br />点击重试</span>
+      ) : null}
+    </button>
+  );
+}
+
+function isDirectImageSource(value: string) {
+  return /^(https?:|data:|blob:|\/)/i.test(value);
 }
 
 function compareChatMessages(left: ChatMessage, right: ChatMessage) {

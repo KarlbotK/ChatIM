@@ -52,10 +52,22 @@ public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message>
         // 红包消息：将整个 body 序列化为 JSON 存入 content
         if (type != null && type == MessageTypeConstant.RED_PACKET_MESSAGE) {
             message.setContent(JSON.toJSONString(messageRequest.getBody()));
+        } else if (type != null && type == MessageTypeConstant.IMAGE_MESSAGE
+                && body.getObjectName() != null && !body.getObjectName().isBlank()) {
+            message.setContent("[图片]");
         } else {
             message.setContent(body.getContent());
         }
         message.setReplyId(body.getReplyId());
+        if (type != null && type == MessageTypeConstant.IMAGE_MESSAGE) {
+            message.setMediaObjectName(body.getObjectName());
+            message.setMediaContentType(body.getMediaContentType());
+            message.setMediaWidth(body.getMediaWidth());
+            message.setMediaHeight(body.getMediaHeight());
+            message.setMediaSize(body.getMediaSize());
+            message.setThumbnailObjectName(body.getThumbnailObjectName());
+            message.setMediaOriginalName(body.getOriginalName());
+        }
         try {
             ThrowUtils.throwIf(!this.save(message), ErrorCode.SYSTEM_ERROR);
             return new MessagePersistResult(persistedRecord(message), true);
@@ -464,6 +476,13 @@ public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message>
             MessageBody body = new MessageBody();
             body.setContent(msg.getContent());
             body.setReplyId(msg.getReplyId());
+            body.setObjectName(msg.getMediaObjectName());
+            body.setMediaContentType(msg.getMediaContentType());
+            body.setMediaWidth(msg.getMediaWidth());
+            body.setMediaHeight(msg.getMediaHeight());
+            body.setMediaSize(msg.getMediaSize());
+            body.setThumbnailObjectName(msg.getThumbnailObjectName());
+            body.setOriginalName(msg.getMediaOriginalName());
             response.setBody(body);
 
             responses.add(response);

@@ -723,7 +723,8 @@ disconnected -> connecting -> connected -> reconnecting -> connected
 | POST `/api/message/reactions` | 消息表情回应 |
 | POST `/api/group/{sessionId}/polls` | 群投票 |
 | POST `/api/call/session` | 音视频通话信令 |
-| GET `/api/file/{objectName}/download-url` | 私有文件临时下载地址 |
+| GET `/api/file/{sessionId}/upload-url` | 获取会话图片预签名上传地址和稳定对象标识 |
+| GET `/api/file/{sessionId}/download-url?objectName=...` | 校验会话权限后获取私有图片临时下载地址 |
 | POST `/api/device/register` | 推送设备注册 |
 | GET `/api/device/list` | 登录设备管理 |
 

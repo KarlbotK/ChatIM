@@ -11,12 +11,20 @@ export type PreparedChatImage = {
 };
 
 export type UploadedChatImage = Omit<PreparedChatImage, "blob"> & {
-  downloadUrl: string;
+  objectName: string;
+  mediaContentType: string;
 };
 
 type UploadUrlResponse = {
   uploadUrl: string;
+  objectName: string;
+  expiresInSeconds: number;
+};
+
+export type DownloadUrlResponse = {
   downloadUrl: string;
+  objectName: string;
+  expiresInSeconds: number;
 };
 
 type ApiResponse<T> = {
@@ -76,6 +84,7 @@ export async function prepareChatImage(file: File): Promise<PreparedChatImage> {
 
 export async function uploadChatImage(
   session: AuthSession,
+  sessionId: string,
   prepared: PreparedChatImage,
   onProgress: (progress: number) => void,
 ): Promise<UploadedChatImage> {
@@ -84,43 +93,85 @@ export async function uploadChatImage(
       await delay(110);
       onProgress(progress);
     }
-    return { ...prepared, downloadUrl: prepared.previewUrl };
+    return {
+      ...prepared,
+      objectName: `chat/${sessionId}/${session.userId}/${prepared.fileName.split("/").pop()}`,
+      mediaContentType: prepared.blob.type || "image/jpeg",
+    };
   }
 
-  const target = await requestUploadUrl(session, prepared.fileName);
-  await putObject(target.uploadUrl, prepared.blob, onProgress);
+  let target = await requestUploadUrl(session, sessionId, prepared.originalName);
+  try {
+    await putObject(target.uploadUrl, prepared.blob, onProgress);
+  } catch {
+    target = await requestUploadUrl(session, sessionId, prepared.originalName, target.objectName);
+    await putObject(target.uploadUrl, prepared.blob, onProgress);
+  }
   return {
     fileName: prepared.fileName,
     originalName: prepared.originalName,
     previewUrl: prepared.previewUrl,
-    downloadUrl: target.downloadUrl,
+    objectName: target.objectName,
+    mediaContentType: prepared.blob.type || "image/jpeg",
     width: prepared.width,
     height: prepared.height,
     size: prepared.size,
   };
 }
 
-async function requestUploadUrl(session: AuthSession, fileName: string) {
+export async function resolveChatImageUrl(
+  session: AuthSession,
+  sessionId: string,
+  objectName: string,
+) {
+  if (demoModeEnabled) {
+    throw new MediaApiError("演示图片没有远程地址");
+  }
+  const query = new URLSearchParams({ objectName });
+  return requestApi<DownloadUrlResponse>(
+    session,
+    `/api/file/${encodeURIComponent(sessionId)}/download-url?${query}`,
+    "暂时无法获取图片",
+  );
+}
+
+async function requestUploadUrl(
+  session: AuthSession,
+  sessionId: string,
+  fileName: string,
+  objectName?: string,
+) {
+  const query = new URLSearchParams({ fileName });
+  if (objectName) query.set("objectName", objectName);
+  return requestApi<UploadUrlResponse>(
+    session,
+    `/api/file/${encodeURIComponent(sessionId)}/upload-url?${query}`,
+    "暂时无法获取图片上传地址",
+  );
+}
+
+async function requestApi<T>(session: AuthSession, path: string, fallbackMessage: string) {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 12_000);
   try {
-    const response = await fetch(`${API_BASE}/api/user/uploadUrl?fileName=${encodeURIComponent(fileName)}`, {
+    const response = await fetch(`${API_BASE}${path}`, {
       headers: {
         Accept: "application/json",
+        Authorization: `Bearer ${session.accessToken}`,
         "Access-Token": session.accessToken,
         "Refresh-Token": session.refreshToken,
       },
       signal: controller.signal,
     });
-    const payload = await response.json().catch(() => null) as ApiResponse<UploadUrlResponse> | null;
-    if (!response.ok || !payload || payload.code !== 200 || !payload.data?.uploadUrl || !payload.data?.downloadUrl) {
-      throw new MediaApiError(payload?.message || "暂时无法获取图片上传地址");
+    const payload = await response.json().catch(() => null) as ApiResponse<T> | null;
+    if (!response.ok || !payload || payload.code !== 200 || !payload.data) {
+      throw new MediaApiError(payload?.message || fallbackMessage);
     }
     return payload.data;
   } catch (error) {
     if (error instanceof MediaApiError) throw error;
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new MediaApiError("获取上传地址超时，请稍后重试");
+      throw new MediaApiError("图片服务响应超时，请稍后重试");
     }
     throw new MediaApiError("暂时连接不上图片服务");
   } finally {

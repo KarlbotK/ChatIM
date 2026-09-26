@@ -286,6 +286,13 @@ public class CanalClient implements CommandLineRunner {
         // 根据消息类型解析 content
         MessageBody body = new MessageBody();
         body.setContent(map.get("content"));
+        body.setObjectName(map.get("media_object_name"));
+        body.setMediaContentType(map.get("media_content_type"));
+        body.setMediaWidth(parseInteger(map.get("media_width")));
+        body.setMediaHeight(parseInteger(map.get("media_height")));
+        body.setMediaSize(parseLong(map.get("media_size")));
+        body.setThumbnailObjectName(map.get("thumbnail_object_name"));
+        body.setOriginalName(map.get("media_original_name"));
         if (StringUtils.isEmpty(map.get("reply_id"))) {
             body.setReplyId(null);
         } else {
@@ -293,6 +300,14 @@ public class CanalClient implements CommandLineRunner {
         }
         messageResponse.setBody(body);
         return messageResponse;
+    }
+
+    private Integer parseInteger(String value) {
+        return StringUtils.isEmpty(value) ? null : Integer.valueOf(value);
+    }
+
+    private Long parseLong(String value) {
+        return StringUtils.isEmpty(value) ? null : Long.valueOf(value);
     }
 
     private long parseCreatedTime(String createdTime) {

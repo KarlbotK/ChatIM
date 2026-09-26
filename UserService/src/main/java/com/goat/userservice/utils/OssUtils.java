@@ -39,6 +39,17 @@ public class OssUtils {
     }
 
     @SneakyThrows
+    public String temporaryDownloadUrl(String bucketName, String objectName, Integer expires) {
+        return minioClient.getPresignedObjectUrl(
+                GetPresignedObjectUrlArgs.builder()
+                        .method(Method.GET)
+                        .bucket(bucketName)
+                        .object(objectName)
+                        .expiry(expires, TimeUnit.SECONDS)
+                        .build());
+    }
+
+    @SneakyThrows
     public boolean objectExists(String bucketName, String objectName) {
         try {
             minioClient.statObject(

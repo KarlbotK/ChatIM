@@ -1,0 +1,12 @@
+package com.goat.userservice.model.dto.response;
+
+import lombok.Builder;
+import lombok.Data;
+
+@Data
+@Builder
+public class ChatFileDownloadResponse {
+    private String downloadUrl;
+    private String objectName;
+    private Integer expiresInSeconds;
+}

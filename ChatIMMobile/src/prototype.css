@@ -2256,7 +2256,21 @@
   object-fit: cover;
 }
 
+.image-placeholder {
+  display: grid;
+  width: 100%;
+  min-height: 104px;
+  place-items: center;
+  color: #989b93;
+}
+
+.image-placeholder svg {
+  width: 28px;
+  height: 28px;
+}
+
 .image-upload-overlay,
+.image-loading-overlay,
 .image-failed-overlay {
   position: absolute;
   inset: 0;
@@ -2273,6 +2287,15 @@
 }
 
 .image-upload-overlay i {
+  width: 21px;
+  height: 21px;
+  border: 2px solid rgba(255, 255, 255, 0.48);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.image-loading-overlay i {
   width: 21px;
   height: 21px;
   border: 2px solid rgba(255, 255, 255, 0.48);

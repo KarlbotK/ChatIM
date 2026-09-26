@@ -13,6 +13,24 @@ public class MessageBody {
     private Long replyId;
 
     /**
+     * Stable object storage identifier for media messages. Presigned URLs must
+     * never be persisted in the message body.
+     */
+    private String objectName;
+
+    private String mediaContentType;
+
+    private Integer mediaWidth;
+
+    private Integer mediaHeight;
+
+    private Long mediaSize;
+
+    private String thumbnailObjectName;
+
+    private String originalName;
+
+    /**
      * 红包ID（红包消息专用）
      */
     private String redPacketId;

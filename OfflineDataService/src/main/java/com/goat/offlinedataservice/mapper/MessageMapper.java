@@ -17,9 +17,13 @@ public interface MessageMapper extends BaseMapper<Message> {
     @Select("""
             <script>
             SELECT message_id, client_message_id, sender_id, session_id, type, content,
+                   media_object_name, media_content_type, media_width, media_height,
+                   media_size, thumbnail_object_name, media_original_name,
                    reply_id, session_type, created_time, updated_time
             FROM (
                 SELECT message_id, client_message_id, sender_id, session_id, type, content,
+                       media_object_name, media_content_type, media_width, media_height,
+                       media_size, thumbnail_object_name, media_original_name,
                        reply_id, session_type, created_time, updated_time,
                        ROW_NUMBER() OVER (
                            PARTITION BY session_id
