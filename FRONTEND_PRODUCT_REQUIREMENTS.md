@@ -119,7 +119,7 @@ http://localhost:10010
 | RealTimeService HTTP | 8102 | 否 |
 | Netty WebSocket | 9101 | 当前暂时直连 |
 
-当前 Gateway 已补充 `/api/contact/**` 和 `/api/group/**` 到 UserService 的路由，红包统一使用 `/api/chat/redPacket/**`。真机调试应把 localhost 换成设备可访问的开发机地址；生产环境的 HTTP、WebSocket 和对象存储地址均需对客户端可达。
+当前 Gateway 已补充 `/api/contact/**`、`/api/group/**` 和 `/api/file/**` 到 UserService 的路由，体验红包统一使用 `/api/chat/redPacket/**`。真机调试应把 localhost 换成设备可访问的开发机地址；生产环境的 HTTP、WebSocket 和对象存储地址均需对客户端可达。
 
 ### 4.2 HTTP 请求头
 
@@ -167,7 +167,7 @@ Authorization: Bearer <accessToken>
 
 - 雪花 ID 使用 `Long`，前端模型统一按 `String` 保存；当前服务端仍可能输出 JSON 数字，Web 端需服务端字符串化或无损解析，不能先转 JavaScript Number 再转字符串；
 - 前端内部时间统一转成毫秒；聊天 `createdTime` 和通知 `timestamp` 已使用毫秒，部分 HTTP DTO 仍是 Java Date，联调时需确认实际序列化格式；
-- 红包金额接口当前使用元，前端展示两位小数；
+- 体验红包数值展示为保留两位小数的虚拟点数，不代表真实金额；
 - 消息 `clientMessageId` 由客户端生成，用于本地发送关联，不是数据库 messageId；服务端按“已认证发送者 + clientMessageId”持久化并建立唯一约束，历史和离线消息会返回该字段。
 
 ## 5. 页面信息架构
@@ -383,17 +383,17 @@ App 请求 uploadUrl
 | GET | `/api/chat/redPacket/basic?redPacketId=` | 红包气泡快速展示 | 红包 ID | 基本信息 |
 | GET | `/api/chat/redPacket/?redPacketId=&pageNum=&pageSize=` | 红包详情页 | 红包 ID、分页 | 发送者、金额、领取记录 |
 
-红包发送弹窗：
+红包发送弹窗（当前为无真实资金价值的体验红包）：
 
 - 类型：普通红包、拼手气红包；
-- 金额单位：元；
+- 数值单位：体验点；
 - 个数：群聊必填，单聊默认 1；
 - 文案：最多限制后端允许长度；
 - 发送按钮点击后立即进入 loading；
 - `clientMessageId` 由 App 生成并保存；
 - 请求外层 `type=3`；红包类型放在 `body.redPacketType`（0 普通、1 拼手气），同时传 totalAmount、totalCount、redPacketWrapperText；
 - HTTP 成功后用返回的 redPacketId、messageId 关联本地气泡，再合并 WebSocket/历史消息；不能只等 WebSocket 回推；
-- 当前服务端只有 3 秒防重复提交，未按 clientMessageId 实现持久化幂等。发送超时应显示“结果待确认”，在补齐结果查询和幂等前不得自动再次扣款发送。
+- 当前服务端只有 3 秒防重复提交，未按 clientMessageId 实现持久化幂等。发送超时应显示“结果待确认”，在补齐结果查询和幂等前不得自动重复创建。
 
 红包整体状态（`/basic` 和详情）：
 
@@ -405,7 +405,7 @@ App 请求 uploadUrl
 
 领取接口 `/receive` 需单独适配：当前普通领取成功和重复领取都可能返回 `status=0`，领到最后一份时返回 `status=1` 且有金额，不存在时返回 `-1`；实际实现没有返回 `status=3`。不可把 `status=1` 一律解释为本次领取失败，也不能由整体状态推断当前用户已领取。第一版展示返回金额、提示和领取记录；明确的“本次领取结果/已领取”字段属于后端待补充项。
 
-当前红包请求体仍包含 `senderId` 和 `userId`，正式产品必须由后端从 JWT 读取当前用户，避免用户伪造他人身份发红包或领取红包。
+红包请求体为兼容旧 DTO 仍包含 `senderId` 和 `userId`，Gateway 会用 JWT 解析结果写入内部身份头，RedPacketService 会覆盖请求体身份，避免伪造他人身份发送或领取。
 
 ## 7. WebSocket 产品链路
 

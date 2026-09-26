@@ -68,8 +68,11 @@ public class AuthorizeFilter implements GlobalFilter, Ordered {
                     String redisAccessToken = stringRedisTemplate.opsForValue()
                             .get(CommonConstant.ACCESS_TOKEN_PREFIX + userId);
                     if (accessToken.equals(redisAccessToken)) {
-                        // Token 合法，放行
-                        return chain.filter(exchange);
+                        // Token 合法后覆盖内部身份头，避免下游继续信任请求体中的 userId/senderId。
+                        ServerHttpRequest authenticatedRequest = request.mutate()
+                                .headers(headers -> headers.set("X-Authenticated-User-Id", userId))
+                                .build();
+                        return chain.filter(exchange.mutate().request(authenticatedRequest).build());
                     }
                 }
             }

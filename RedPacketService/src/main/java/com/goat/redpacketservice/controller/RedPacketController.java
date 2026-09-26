@@ -1,7 +1,9 @@
 package com.goat.redpacketservice.controller;
 
 import com.goat.common.common.BaseResponse;
+import com.goat.common.common.ErrorCode;
 import com.goat.common.common.ResultUtils;
+import com.goat.common.exception.BusinessException;
 import com.goat.redpacketservice.annotation.PreventDuplicateSubmit;
 import com.goat.redpacketservice.model.dto.RedPacketReceiveRequest;
 import com.goat.redpacketservice.model.dto.RedPacketSendRequest;
@@ -34,7 +36,10 @@ public class RedPacketController {
      */
     @PostMapping("/send")
     @PreventDuplicateSubmit(expireSeconds = 3)
-    public BaseResponse<RedPacketSendVO> sendRedPacket(@RequestBody RedPacketSendRequest request) {
+    public BaseResponse<RedPacketSendVO> sendRedPacket(
+            @RequestHeader(value = "X-Authenticated-User-Id", required = false) String authenticatedUserId,
+            @RequestBody RedPacketSendRequest request) {
+        request.setSenderId(requireAuthenticatedUserId(authenticatedUserId));
         RedPacketSendVO result = redPacketService.sendRedPacket(request);
         log.info("红包发送成功，红包ID: {}, 消息ID: {}", result.getRedPacketId(), result.getMessageId());
         return ResultUtils.success(result);
@@ -46,7 +51,10 @@ public class RedPacketController {
      * @return 领取结果
      */
     @PostMapping("/receive")
-    public BaseResponse<ReceiveResultVO> receiveRedPacket(@RequestBody RedPacketReceiveRequest request) {
+    public BaseResponse<ReceiveResultVO> receiveRedPacket(
+            @RequestHeader(value = "X-Authenticated-User-Id", required = false) String authenticatedUserId,
+            @RequestBody RedPacketReceiveRequest request) {
+        request.setUserId(requireAuthenticatedUserId(authenticatedUserId));
         log.info("领取红包请求，用户ID: {}, 红包ID: {}",
                 request.getUserId(),
                 request.getRedPacketId());
@@ -107,5 +115,16 @@ public class RedPacketController {
                 basicInfo.getReceivedCount());
 
         return ResultUtils.success(basicInfo);
+    }
+
+    private Long requireAuthenticatedUserId(String value) {
+        try {
+            if (value == null || value.isBlank()) {
+                throw new NumberFormatException("missing authenticated user id");
+            }
+            return Long.valueOf(value);
+        } catch (NumberFormatException exception) {
+            throw new BusinessException(ErrorCode.NOT_LOGIN_ERROR);
+        }
     }
 }

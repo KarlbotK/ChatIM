@@ -34,6 +34,7 @@ import {
   SpeakerOffIcon,
 } from "@radix-ui/react-icons";
 import {
+  BottomSheet,
   FlowStack,
   KeyboardInput,
   KeyboardTextarea,
@@ -112,6 +113,14 @@ import {
   type RealtimeMessageAck,
   type RealtimeSystemNotification,
 } from "./realtime";
+import {
+  RedPacketApiError,
+  fetchRedPacketDetail,
+  receiveRedPacket,
+  sendRedPacket,
+  type RedPacketDetail,
+  type RedPacketDraft,
+} from "./redPackets";
 import {
   fetchSessionList,
   hideSession,
@@ -2087,6 +2096,51 @@ function MainShell({ session, onLogout }: { session: AuthSession; onLogout: () =
             throw error;
           }
         }}
+        onSendRedPacket={async (draft) => {
+          const clientMessageId = makeClientMessageId();
+          const peerId = activeConversation.peerId
+            || contacts.find((contact) => contact.conversationId === activeConversation.id)?.id;
+          const result = await sendRedPacket(session, {
+            ...draft,
+            sessionId: activeConversation.id,
+            receiverId: activeConversation.group ? null : peerId,
+            sessionType: activeConversation.group ? 1 : 0,
+            clientMessageId,
+          });
+          const sentAt = new Date();
+          const outgoing: ChatMessage = {
+            id: clientMessageId,
+            messageId: result.messageId,
+            clientMessageId,
+            mine: true,
+            kind: "red-packet",
+            content: draft.wrapperText,
+            redPacketId: result.redPacketId,
+            redPacketText: draft.wrapperText,
+            time: formatClock(sentAt),
+            createdTime: sentAt.getTime(),
+            status: "sent",
+          };
+          setMessages((items) => {
+            const current = items[activeConversation.id] ?? [];
+            const existingIndex = current.findIndex((item) => item.clientMessageId === clientMessageId);
+            const nextConversationMessages = existingIndex >= 0
+              ? current.map((item, index) => index === existingIndex ? { ...item, ...outgoing } : item)
+              : [...current, outgoing];
+            return { ...items, [activeConversation.id]: nextConversationMessages };
+          });
+          setConversations((items) => [
+            ...sortConversationList(items.map((item) => item.id === activeConversation.id
+              ? {
+                ...item,
+                preview: `[体验红包] ${draft.wrapperText}`,
+                time: "刚刚",
+                activityTime: sentAt.getTime(),
+                failed: false,
+              }
+              : item)),
+          ]);
+        }}
         onResolveMessage={(message) => resolveOrRetryMessage(activeConversation, message)}
         onLoadHistory={async () => {
           const currentMessages = messages[activeConversation.id] ?? [];
@@ -2406,7 +2460,7 @@ type ChatMessage = {
   time: string;
   createdTime?: number;
   status?: MessageStatus;
-  kind?: "text" | "image";
+  kind?: "text" | "image" | "red-packet";
   imageName?: string;
   imageWidth?: number;
   imageHeight?: number;
@@ -2417,6 +2471,8 @@ type ChatMessage = {
   failureSource?: "upload" | "delivery";
   errorCode?: number;
   errorMessage?: string;
+  redPacketId?: string;
+  redPacketText?: string;
 };
 
 type Contact = {
@@ -3582,6 +3638,7 @@ function ChatScreen({
   onOpenDetails,
   onSend,
   onSendImage,
+  onSendRedPacket,
   onResolveMessage,
   onLoadHistory,
   connectionLabel,
@@ -3595,6 +3652,7 @@ function ChatScreen({
   onOpenDetails: () => void;
   onSend: (content: string) => void;
   onSendImage: (file: File) => Promise<void>;
+  onSendRedPacket: (draft: RedPacketDraft) => Promise<void>;
   onResolveMessage: (message: ChatMessage) => Promise<string>;
   onLoadHistory: () => Promise<number>;
   connectionLabel: string;
@@ -3608,10 +3666,28 @@ function ChatScreen({
   const [previewImage, setPreviewImage] = useState<ChatMessage | null>(null);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [messageActionId, setMessageActionId] = useState<string | null>(null);
+  const [packetComposerOpen, setPacketComposerOpen] = useState(false);
+  const [packetType, setPacketType] = useState<0 | 1>(0);
+  const [packetAmount, setPacketAmount] = useState("6.66");
+  const [packetCount, setPacketCount] = useState(conversation.group ? "3" : "1");
+  const [packetText, setPacketText] = useState("祝你今天开心");
+  const [packetBusy, setPacketBusy] = useState(false);
+  const [packetFeedback, setPacketFeedback] = useState("");
+  const [packetDetailOpen, setPacketDetailOpen] = useState(false);
+  const [packetDetail, setPacketDetail] = useState<RedPacketDetail | null>(null);
+  const [packetDetailBusy, setPacketDetailBusy] = useState(false);
+  const [packetDetailFeedback, setPacketDetailFeedback] = useState("");
 
   useEffect(() => {
     if (isKeyboardVisible) setShowTools(false);
   }, [isKeyboardVisible]);
+
+  useEffect(() => {
+    if (!conversation.group) {
+      setPacketType(0);
+      setPacketCount("1");
+    }
+  }, [conversation.group, conversation.id]);
 
   const submit = () => {
     const content = draft.trim();
@@ -3628,12 +3704,12 @@ function ChatScreen({
 
   const selectImage = () => {
     keyboard.hide();
-    setShowTools(false);
     imageInputRef.current?.click();
   };
 
   const handleImage = async (file?: File) => {
     if (!file || imageBusy) return;
+    setShowTools(false);
     setImageBusy(true);
     setToast("正在处理并上传图片…");
     try {
@@ -3681,6 +3757,86 @@ function ChatScreen({
     }
   };
 
+  const openPacketComposer = () => {
+    keyboard.hide();
+    setShowTools(false);
+    setPacketFeedback("");
+    setPacketComposerOpen(true);
+  };
+
+  const submitPacket = async () => {
+    if (packetBusy) return;
+    const totalAmount = Number(packetAmount);
+    const totalCount = Number(packetCount);
+    const wrapperText = packetText.trim() || "祝你今天开心";
+    if (!Number.isFinite(totalAmount) || totalAmount <= 0) {
+      setPacketFeedback("请输入大于 0 的体验金额");
+      return;
+    }
+    if (!Number.isInteger(totalCount) || totalCount <= 0) {
+      setPacketFeedback("红包数量必须是正整数");
+      return;
+    }
+    if (conversation.group && conversation.membersCount && totalCount > conversation.membersCount) {
+      setPacketFeedback(`当前群聊最多发送 ${conversation.membersCount} 个体验红包`);
+      return;
+    }
+    setPacketBusy(true);
+    setPacketFeedback("");
+    try {
+      await onSendRedPacket({
+        redPacketType: conversation.group ? packetType : 0,
+        totalAmount,
+        totalCount: conversation.group ? totalCount : 1,
+        wrapperText,
+      });
+      setPacketComposerOpen(false);
+      setToast("体验红包已发送");
+      window.setTimeout(() => setToast(""), 2_000);
+    } catch (error) {
+      setPacketFeedback(error instanceof RedPacketApiError ? error.message : "体验红包暂时发送失败");
+    } finally {
+      setPacketBusy(false);
+    }
+  };
+
+  const openPacketDetail = async (message: ChatMessage) => {
+    if (!message.redPacketId) {
+      setToast("红包信息不完整");
+      window.setTimeout(() => setToast(""), 1_800);
+      return;
+    }
+    keyboard.hide();
+    setPacketDetailOpen(true);
+    setPacketDetail(null);
+    setPacketDetailFeedback("");
+    setPacketDetailBusy(true);
+    try {
+      setPacketDetail(await fetchRedPacketDetail(session, message.redPacketId));
+    } catch (error) {
+      setPacketDetailFeedback(error instanceof RedPacketApiError ? error.message : "暂时无法读取体验红包");
+    } finally {
+      setPacketDetailBusy(false);
+    }
+  };
+
+  const claimPacket = async () => {
+    if (!packetDetail || packetDetailBusy || packetDetail.status !== 0) return;
+    setPacketDetailBusy(true);
+    setPacketDetailFeedback("");
+    try {
+      const result = await receiveRedPacket(session, packetDetail.redPacketId);
+      setPacketDetailFeedback(result.amount == null
+        ? result.message
+        : `${result.message}：${formatVirtualAmount(result.amount)} 点`);
+      setPacketDetail(await fetchRedPacketDetail(session, packetDetail.redPacketId));
+    } catch (error) {
+      setPacketDetailFeedback(error instanceof RedPacketApiError ? error.message : "体验红包领取失败");
+    } finally {
+      setPacketDetailBusy(false);
+    }
+  };
+
   return (
     <div className="chat-screen" style={{ "--chat-bottom-inset": `${bottomInset}px` } as CSSProperties}>
       <header className="chat-header">
@@ -3717,6 +3873,8 @@ function ChatScreen({
                       setPreviewImage({ ...message, content: source });
                     }}
                   />
+                ) : message.kind === "red-packet" ? (
+                  <RedPacketBubble message={message} onOpen={() => void openPacketDetail(message)} />
                 ) : (
                   <div className="message-bubble">{message.content}</div>
                 )}
@@ -3771,13 +3929,35 @@ function ChatScreen({
 
       {showTools ? (
         <div className="chat-tool-tray" style={{ bottom: bottomInset + 68 }}>
-          <button type="button" onClick={selectImage} disabled={imageBusy} aria-label="选择图片"><span><ImageIcon /></span>{imageBusy ? "处理中" : "图片"}</button>
-          <button type="button" onClick={() => showComingSoon("红包")}><span className="packet-symbol">¥</span>红包</button>
+          <label
+            htmlFor="chat-image-picker"
+            role="button"
+            tabIndex={imageBusy ? -1 : 0}
+            aria-disabled={imageBusy}
+            aria-label="选择图片"
+            onClick={(event) => {
+              if (imageBusy) {
+                event.preventDefault();
+                return;
+              }
+              keyboard.hide();
+            }}
+            onKeyDown={(event) => {
+              if (!imageBusy && (event.key === "Enter" || event.key === " ")) {
+                event.preventDefault();
+                selectImage();
+              }
+            }}
+          >
+            <span><ImageIcon /></span>{imageBusy ? "处理中" : "图片"}
+          </label>
+          <button type="button" onClick={openPacketComposer}><span className="packet-symbol">福</span>体验红包</button>
           <button type="button" onClick={() => showComingSoon("文件发送")}><span><FileIcon /></span>文件</button>
         </div>
       ) : null}
 
       <input
+        id="chat-image-picker"
         ref={imageInputRef}
         className="chat-image-input"
         type="file"
@@ -3785,6 +3965,85 @@ function ChatScreen({
         tabIndex={-1}
         onChange={(event) => void handleImage(event.target.files?.[0])}
       />
+
+      <BottomSheet
+        open={packetComposerOpen}
+        onOpenChange={setPacketComposerOpen}
+        title="发体验红包"
+        description="仅用于产品体验，没有真实资金价值"
+        snap={0.72}
+      >
+        <form className="packet-compose-form" onSubmit={(event) => {
+          event.preventDefault();
+          void submitPacket();
+        }}>
+          {conversation.group ? (
+            <div className="packet-type-switch" role="group" aria-label="体验红包类型">
+              <button type="button" className={packetType === 0 ? "active" : ""} onClick={() => setPacketType(0)}>普通红包</button>
+              <button type="button" className={packetType === 1 ? "active" : ""} onClick={() => setPacketType(1)}>拼手气</button>
+            </div>
+          ) : null}
+          <label className="packet-field">
+            <span>体验金额</span>
+            <div><KeyboardInput inputMode="decimal" value={packetAmount} onChange={(event) => setPacketAmount(event.target.value)} /><b>点</b></div>
+            <small>虚拟数值，不会扣款</small>
+          </label>
+          {conversation.group ? (
+            <label className="packet-field">
+              <span>红包数量</span>
+              <div><KeyboardInput inputMode="numeric" value={packetCount} onChange={(event) => setPacketCount(event.target.value)} /><b>个</b></div>
+              <small>最多 {conversation.membersCount || "群成员数"} 个</small>
+            </label>
+          ) : null}
+          <label className="packet-field packet-message-field">
+            <span>祝福语</span>
+            <KeyboardInput maxLength={24} value={packetText} onChange={(event) => setPacketText(event.target.value)} />
+          </label>
+          {packetFeedback ? <p className="packet-feedback" role="alert">{packetFeedback}</p> : null}
+          <button type="submit" className="packet-submit" disabled={packetBusy}>
+            {packetBusy ? "正在发送…" : "塞入体验红包"}
+          </button>
+        </form>
+      </BottomSheet>
+
+      <BottomSheet
+        open={packetDetailOpen}
+        onOpenChange={setPacketDetailOpen}
+        title="体验红包"
+        description="虚拟互动，不涉及真实资金"
+        snap={0.76}
+      >
+        <div className="packet-detail">
+          {packetDetailBusy && !packetDetail ? <div className="packet-detail-loading"><i />正在打开红包…</div> : null}
+          {packetDetail ? (
+            <>
+              <section className="packet-detail-card">
+                <span className="packet-detail-seal">福</span>
+                <small>{packetDetail.senderNickname || "ChatIM 用户"} 发出的体验红包</small>
+                <strong>{packetDetail.redPacketWrapperText || "祝你今天开心"}</strong>
+                <b>{formatVirtualAmount(packetDetail.totalAmount)} <em>点</em></b>
+                <p>{redPacketStatusLabel(packetDetail.status, packetDetail.receivedCount, packetDetail.totalCount)}</p>
+              </section>
+              {packetDetailFeedback ? <p className="packet-feedback success" role="status">{packetDetailFeedback}</p> : null}
+              {packetDetail.status === 0 ? (
+                <button type="button" className="packet-submit" disabled={packetDetailBusy} onClick={() => void claimPacket()}>
+                  {packetDetailBusy ? "正在领取…" : "领取体验红包"}
+                </button>
+              ) : null}
+              <section className="packet-records">
+                <header><strong>领取记录</strong><span>{packetDetail.receivedCount}/{packetDetail.totalCount}</span></header>
+                {packetDetail.receiveRecords.length === 0 ? <p>还没有人领取，快来拆开吧</p> : packetDetail.receiveRecords.map((record) => (
+                  <div key={`${record.receiverId}-${record.receivedAt}`}>
+                    <Avatar label={(record.receiverNickname || "用").slice(0, 1)} imageUrl={record.receiverAvatar} tone={toneFromId(record.receiverId)} />
+                    <span><strong>{record.receiverNickname || `用户 ${record.receiverId}`}</strong><small>{formatPacketTime(record.receivedAt)}</small></span>
+                    <b>{formatVirtualAmount(record.amount)} 点</b>
+                  </div>
+                ))}
+              </section>
+            </>
+          ) : packetDetailFeedback ? <p className="packet-feedback" role="alert">{packetDetailFeedback}</p> : null}
+        </div>
+      </BottomSheet>
 
       <footer className="chat-composer" style={{ bottom: bottomInset }}>
         <button type="button" className="composer-tool" onClick={() => showComingSoon("表情")} aria-label="选择表情"><FaceIcon /></button>
@@ -3976,7 +4235,8 @@ function isRealtimeMessage(message: RealtimeMessage) {
     && message.senderId != null
     && typeof message.type === "number"
     && (typeof message.body?.content === "string"
-      || (message.type === 1 && typeof message.body?.objectName === "string"));
+      || (message.type === 1 && typeof message.body?.objectName === "string")
+      || (message.type === 3 && typeof message.body?.redPacketId === "string"));
 }
 
 function toChatMessage(message: RealtimeMessage, userId: AuthSession["userId"]): ChatMessage {
@@ -3987,11 +4247,13 @@ function toChatMessage(message: RealtimeMessage, userId: AuthSession["userId"]):
     messageId: message.messageId == null ? undefined : String(message.messageId),
     clientMessageId,
     mine: String(message.senderId) === String(userId),
-    content: message.body.content || "[图片]",
+    content: message.type === 3
+      ? message.body.redPacketWrapperText || "给你一个体验红包"
+      : message.body.content || "[图片]",
     time: formatClock(new Date(createdTime)),
     createdTime,
     status: String(message.senderId) === String(userId) ? "sent" : undefined,
-    kind: message.type === 1 ? "image" : "text",
+    kind: message.type === 1 ? "image" : message.type === 3 ? "red-packet" : "text",
     imageName: message.type === 1
       ? message.body.originalName || imageNameFromUrl(message.body.objectName || message.body.content)
       : undefined,
@@ -4000,7 +4262,21 @@ function toChatMessage(message: RealtimeMessage, userId: AuthSession["userId"]):
     imageSize: message.body.mediaSize || undefined,
     mediaObjectName: message.body.objectName || undefined,
     mediaContentType: message.body.mediaContentType || undefined,
+    redPacketId: message.body.redPacketId || undefined,
+    redPacketText: message.body.redPacketWrapperText || undefined,
   };
+}
+
+function RedPacketBubble({ message, onOpen }: { message: ChatMessage; onOpen: () => void }) {
+  return (
+    <button type="button" className="red-packet-bubble" onClick={onOpen} aria-label={`打开体验红包：${message.redPacketText || message.content}`}>
+      <span className="red-packet-mark">福</span>
+      <span className="red-packet-copy">
+        <strong>{message.redPacketText || message.content || "祝你今天开心"}</strong>
+        <small>{message.mine ? "查看领取详情" : "点击领取体验红包"}</small>
+      </span>
+    </button>
+  );
 }
 
 function ChatMessageImage({
@@ -4119,6 +4395,21 @@ function formatConversationTime(value?: number) {
   const now = new Date();
   if (now.toDateString() === date.toDateString()) return formatClock(date);
   return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(date);
+}
+
+function formatVirtualAmount(value: number) {
+  return Number(value || 0).toFixed(2);
+}
+
+function formatPacketTime(value: string | number) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "刚刚" : formatClock(date);
+}
+
+function redPacketStatusLabel(status: number, receivedCount: number, totalCount: number) {
+  if (status === 1) return `已领完 · ${receivedCount}/${totalCount}`;
+  if (status === 2) return `已过期 · ${receivedCount}/${totalCount}`;
+  return `领取中 · ${receivedCount}/${totalCount}`;
 }
 
 function sortConversationList(items: Conversation[]) {

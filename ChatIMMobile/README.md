@@ -11,6 +11,7 @@
 - 新朋友申请列表、未读数、批量已读、接受/拒绝，以及通过后直接发起会话；
 - 群聊列表、好友多选建群、部分失败结果、服务端群资料、分页成员、群资料修改、成员管理，以及群主或管理员继续邀请好友；
 - 聊天图片选择、格式与大小校验、最长边压缩、上传进度、图片气泡和全屏预览；
+- 单聊和群聊体验红包发送、领取、详情及领取记录；体验点数没有真实资金价值；
 - WebSocket 实时收发、心跳保活、指数退避重连和服务端回推确认；
 - 登录及重连后的会话摘要同步、服务端未读数校正、已读位置提交、离线消息补拉、按消息编号去重，以及向上加载历史消息；
 - 发现页和个人中心的第一版信息架构；
@@ -53,6 +54,9 @@ $env:FRONTEND_ORIGIN="http://localhost:4173"
 - `POST /api/group/invite`
 - `GET /api/file/{sessionId}/upload-url?fileName=`，返回会话内稳定对象标识，随后直接 `PUT` 到 MinIO 预签名地址
 - `GET /api/file/{sessionId}/download-url?objectName=`，校验会话权限后获取短期下载地址
+- `POST /api/chat/redPacket/send`，发送普通或拼手气体验红包
+- `POST /api/chat/redPacket/receive`，领取体验红包
+- `GET /api/chat/redPacket/?redPacketId=&pageNum=&pageSize=`，查询体验红包详情和领取记录
 - `WS /ws/netty`，文本心跳与消息收发
 - `POST /api/message/offline/sync`
 - `POST /api/message/history`

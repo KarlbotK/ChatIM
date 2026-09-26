@@ -51,5 +51,7 @@ server:
   port: ${SERVER_PORT:8103}
 
 redpacket:
+  # 默认使用无实际价值的体验红包，不扣减或增加 user_balance。
+  virtual-mode: ${REDPACKET_VIRTUAL_MODE:true}
   validation:
     enabled: ${REDPACKET_VALIDATION_ENABLED:true}

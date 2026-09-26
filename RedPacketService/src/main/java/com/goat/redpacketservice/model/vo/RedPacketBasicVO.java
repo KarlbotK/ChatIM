@@ -1,5 +1,7 @@
 package com.goat.redpacketservice.model.vo;
 
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.util.Date;
@@ -17,6 +19,7 @@ public class RedPacketBasicVO implements Serializable {
     /**
      * 红包 ID
      */
+    @JsonSerialize(using = ToStringSerializer.class)
     private Long redPacketId;
 
     /**

@@ -45,6 +45,7 @@ import org.springframework.beans.BeanUtils;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -70,6 +71,9 @@ public class RedPacketServiceImpl implements RedPacketService {
     private final DefaultRedisScript<List> receiveRedPacketScript;
     private final RedPacketReceiveMapper redPacketReceiveMapper;
     private final UserServiceClient userServiceClient;
+
+    @Value("${redpacket.virtual-mode:true}")
+    private boolean virtualMode;
 
     public RedPacketServiceImpl(RedPacketMapper redPacketMapper,
                                 UserBalanceMapper userBalanceMapper,
@@ -107,14 +111,18 @@ public class RedPacketServiceImpl implements RedPacketService {
         Integer totalCount = body.getTotalCount();
         Integer redPacketType = body.getRedPacketType();
 
-        // 3. 扣减发送者余额
-        deductSenderBalance(senderId, totalAmount);
+        // 3. 虚拟体验模式不操作账户余额；关闭后才执行余额扣减和流水。
+        if (!virtualMode) {
+            deductSenderBalance(senderId, totalAmount);
+        }
 
         // 4. 创建红包记录
         long redPacketId = createRedPacket(request, senderId, totalAmount, totalCount, redPacketType);
 
-        // 5. 记录余额变动日志
-        recordBalanceLog(senderId, -totalAmount, BalanceLogConstant.TYPE_SEND, redPacketId);
+        // 5. 真实账务模式记录余额变动日志。
+        if (!virtualMode) {
+            recordBalanceLog(senderId, -totalAmount, BalanceLogConstant.TYPE_SEND, redPacketId);
+        }
 
         // 6. 红包金额预分配并初始化 Redis 缓存
         initRedPacketCache(redPacketId, redPacketType, totalAmount, totalCount);
@@ -384,7 +392,7 @@ public class RedPacketServiceImpl implements RedPacketService {
         log.info("红包过期处理开始。红包ID: {}, 剩余金额: {}", redPacketId, remainAmount);
 
         // 3. 如果有剩余金额，退回给发送者
-        if (remainAmount > 0) {
+        if (!virtualMode && remainAmount > 0) {
             Long senderId = redPacket.getSenderId();
 
             // 增加发送者余额
@@ -584,11 +592,13 @@ public class RedPacketServiceImpl implements RedPacketService {
         receive.setUpdatedTime(new Date());
         redPacketReceiveMapper.insert(receive);
 
-        // 2. 增加用户余额
-        addBalance(userId, receivedAmount);
+        if (!virtualMode) {
+            // 2. 增加用户余额
+            addBalance(userId, receivedAmount);
 
-        // 3. 记录余额变动日志
-        recordBalanceLog(userId, receivedAmount, BalanceLogConstant.TYPE_RECEIVE, redPacketId);
+            // 3. 记录余额变动日志
+            recordBalanceLog(userId, receivedAmount, BalanceLogConstant.TYPE_RECEIVE, redPacketId);
+        }
 
         log.info("红包领取记录处理完成。红包ID: {}, 用户ID: {}, 金额: {}", redPacketId, userId, receivedAmount);
     }
